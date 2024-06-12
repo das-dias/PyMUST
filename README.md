@@ -1,5 +1,5 @@
 # PyMUST
-This is a Python reimplementation of the MUST ultrasound toolbox for synthetic image generation and reconstruction (https://www.biomecardio.com/MUST/).
+This is a Python reimplementation of the MUST ultrasound toolbox for synthetic B-mode image generation and reconstruction (https://www.biomecardio.com/MUST/).
 
 *Notice:* this is still under development, and might have bugs and errors. Also, even if results should be the same with Matlab version, small numerical differences are expected. If you find any bug/unconsistency with the matlab version, please open a github issue, or send an email to ({damien.garcia@creatis.insa-lyon.fr, gabriel.bernardino@upf.edu}). 
 
@@ -8,17 +8,23 @@ As a design decision, we have tried to keep syntax as close as possible with the
 ## Installation
 The package works in OsX, Linux and Windows (but parallelism might not be available on Windows). We recommend installing it in a separate conda environment.
 
-To install pymust with its dependencies (matplotlib, scipy, numpy), you can directly install from pip:
+You can install the latest release using pip:
+> python3 -m pip install PyMUST
+
+Alternatively, if you recent version from github:
 > pip install git+https://github.com/creatis-ULTIM/PyMUST.git
 
-Alternatively, you can install from the test pypi using the following instruction:
-> python3 -m pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ PyMUST
+If the other options fail, you can download directly the source folder, and add it to the python path (adding this to the beginning of your scripts / notebooks). This solution should be avoided if possible.
+> import sys
+> sys.path.append('yourabsolutepath/to/pymust/src') # The folder separators can be different in @indows
+
 
 ## Main functions
 Please refer to the Matlab documentation
 - Transducer (getparam)
 - Simulation (simus, pfield)
-- Bmode and Dopplerformation from radiofrequencies (tgc, rf2iq, bmode, iq2doppler)
+- Beamforming (dasmtx)
+- Bmode and Doppler formation from radiofrequencies (tgc, rf2iq, bmode, iq2doppler)
 
 ## Examples
 In the folder "examples", you have python notebooks ilustrating the main functionalities of PyMUST. They are the same as the ones available in the Matlab version.
