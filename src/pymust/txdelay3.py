@@ -186,10 +186,6 @@ def txdelay3(*args):
 
     c = param.c
 
-
-    #-- Positions of the transducer elements
-    x, z, THe, h= param.getElementPositions()
-
     if option == 'Plane Wave':
         # DR : problems checking if it is not a vector, used as a number later, no need for casting into array
         tiltx = args[1] # tiltx = np.array(args[1]).reshape((-1, 1))

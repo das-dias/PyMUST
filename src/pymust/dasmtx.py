@@ -390,7 +390,13 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: ut
 
 
     #%-- Centers of the tranducer elements (x- and z-coordinates)
-    xe, ze, THe, h = param.getElementPositions()
+    if isPARAMelements:
+        xe = xe.reshape((1,-1))
+        ze = ze.reshape((1,-1))
+        assert xe.size==nc, 'PARAM.elements must contain size(SIG,2) elements.'
+        THe = np.zeros_like(xe) # no element orientation is given: normals along +z
+    else:
+        xe, ze, THe, h = param.getElementPositions()
 
     #% note: THe = angle of the normal to element #e with respect to the z-axis
 
@@ -409,14 +415,14 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: ut
         if nTX>1:
             idxi = np.linspace(0,nTX -1,4*nTX)
             xTi = utils.interp1(xe[idx], idxi, kind = 'cubic')
-            if isLINEAR:
+            if isLINEAR and not isPARAMelements:
                 zTi = np.zeros_like(xTi)
             else:
                 zTi = utils.interp1(ze[idx], idxi,'spline')
             delaysTXi = utils.interp1(delaysTX[idx],idxi,'spline')
         else:
             xTi = xe[idx]
-            if isLINEAR:
+            if isLINEAR and not isPARAMelements:
                 zTi =np.zeros_like(idx)
             else: 
                 zTi = ze[idx]

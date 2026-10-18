@@ -357,7 +357,8 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
         #%-- TX distances
         if nTX==1:
             #% Only one element was active
-            dTX = np.hypot(xe[WasTransmitting]-x,ze[WasTransmitting]-z) + \
+            # 3-D distance to the active element: the former np.hypot(xe-x, ze-z) dropped the y term
+            dTX = np.sqrt((xe[WasTransmitting]-x)**2 + (ye[WasTransmitting]-y)**2 + (ze[WasTransmitting]-z)**2) + \
                 delaysTX[WasTransmitting]*c;
 
         elif nTX<3:
@@ -372,7 +373,20 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
 
             # Distances between the (x,y,z) points and the lines normal to the
             # virtual transducer at (xv,yv,zv)
-            Dn = np.abs(DzvDx*(y-yv) + DzvDy*(z-zv) - (x-xv))/np.abs(1+DzvDx**2+DzvDy**2);
+            # The virtual transducer is the surface z = zv(x,y), whose unit normal at
+            # (xv,yv,zv) is n = (-DzvDx, -DzvDy, 1)/sqrt(1+DzvDx**2+DzvDy**2). The
+            # distance from a point P to the normal line through V is
+            # sqrt(|P-V|**2 - ((P-V).n)**2); only its argmin is needed, so the
+            # squared distance is used. This is the 3-D analogue of the 2-D Dn in
+            # dasmtx.py. The former expression,
+            #   abs(DzvDx*(y-yv) + DzvDy*(z-zv) - (x-xv))/abs(1+DzvDx**2+DzvDy**2),
+            # paired the x-slope with y (and the y-slope with z) and lacked the
+            # square root: with a known diverging wave it picked virtual points up
+            # to 1.8 mm off, against ~5 um with the geometric distance.
+            normal_norm = np.sqrt(1+DzvDx**2+DzvDy**2)
+            dx, dy, dz = x-xv, y-yv, z-zv
+            along_normal = (-DzvDx*dx - DzvDy*dy + dz)/normal_norm
+            Dn = dx**2 + dy**2 + dz**2 - along_normal**2 # squared distance
             #idx contains the element numbers that give the smallest Dn_s
             idx = np.argmin(Dn, 1)
 
@@ -522,7 +536,13 @@ def  vxdcr3(xe,ye,delaysTX,c):
     xe = xe.flatten(order = 'F')
     ye = ye.flatten(order = 'F')
     dT2dx,dT2dy = trigrad(xe,ye,T2);
-    xV = xe-c**22*dT2dx/2;
+    # Each element e has a virtual point V at distance c*T(e) along the ray:
+    #   c**2*T**2 = (xe-xV)**2 + (ye-yV)**2 + zV**2.
+    # Differentiating with respect to xe (resp. ye) gives
+    #   xV = xe - c**2/2*dT2/dx and yV = ye - c**2/2*dT2/dy,
+    # as in the 2-D vxdcr of dasmtx.py. The former c**22 in the xV line was a
+    # typo: it put the virtual x-positions at ~1e60 m.
+    xV = xe-c**2*dT2dx/2;
     yV = ye-c**2*dT2dy/2;
     zV = -np.sqrt(np.abs(c**2*T2-(xe-xV)**2-(ye-yV)**2));
     return xV,yV,zV

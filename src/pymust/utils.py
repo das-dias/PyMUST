@@ -91,7 +91,7 @@ class Param(dotdict):
         """
         Returns the position of each piezoelectrical element in the probe.
         """
-        RadiusOfCurvature = self.radius
+        RadiusOfCurvature = np.inf if self.radius is None else self.radius # default = linear array
         NumberOfElements = self.Nelements
 
         if np.isinf(RadiusOfCurvature):
