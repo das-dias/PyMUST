@@ -26,7 +26,8 @@ dynamic = ["license", "version"]
 
 [project.optional-dependencies]
 jax = ["jax"]
-test = ["pytest", "jax; python_version >= '3.11'"]
+plot = ["plotly", "nbformat"]
+test = ["pytest", "plotly", "jax; python_version >= '3.11'"]
 
 [project.urls]
 Homepage = "https://www.biomecardio.com/MUST"

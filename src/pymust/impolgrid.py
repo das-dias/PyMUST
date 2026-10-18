@@ -90,16 +90,16 @@ def impolgrid(siz: typing.Union[int, np.ndarray, list], zmax: float, width: floa
 
     assert isinstance(param, utils.Param),'PARAM must be a structure.'
 
-    #%-- Pitch (in m)
-    if not utils.isfield(param,'pitch'):
-        raise ValueError('A pitch value (PARAM.pitch) is required.')
-    p = param.pitch
+    #%-- Element positions
+    #% (from PARAM.elements if given, else from PARAM.pitch, PARAM.Nelements and PARAM.radius)
+    xe, ze, _, _ = param.getElementPositions()
+    N = xe.size
+    # Centre of the array's bounding box (the origin for the uniform arrays)
+    x_center = (np.min(xe)+np.max(xe))/2
+    z_center = (np.min(ze)+np.max(ze))/2
 
-    #%-- Number of elements
-    if utils.isfield(param,'Nelements'):
-        N = param.Nelements
-    else:
-        raise ValueError('The number of elements (PARAM.Nelements) is required.')
+    #%-- Pitch (in m): mean element spacing if PARAM.pitch is not given
+    p = param.pitch if utils.isfield(param,'pitch') else (np.max(xe)-np.min(xe))/(N-1)
 
 
     #%-- Radius of curvature (in m)
@@ -116,7 +116,7 @@ def impolgrid(siz: typing.Union[int, np.ndarray, list], zmax: float, width: floa
     #%-- Origo (x0,z0)
     #% x0 = 0;
     if isLINEAR:
-        L = (N-1)*p# % array width
+        L = np.max(xe)-np.min(xe) # % array width
         #% z0 = -L/2*(1+cos(width))/sin(width); % (old version)
         z0 = 0
     else:
@@ -140,7 +140,7 @@ def impolgrid(siz: typing.Union[int, np.ndarray, list], zmax: float, width: floa
         x,z = pol2cart(th,r)
 
     z = z+z0
-    return x, z
+    return x+x_center, z+z_center
 
 def pol2cart(th, r):
     return r*np.cos(th), r*np.sin(th)

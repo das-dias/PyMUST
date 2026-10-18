@@ -304,7 +304,7 @@ def simus(*varargin):
 
     assert param.fs>=4*param.fc,'PARAM.fs must be >= 4*PARAM.fc.'
 
-    NumberOfElements = param.Nelements # % number of array elements
+    NumberOfElements = param.getElementPositions()[0].size # % number of array elements
 
     #%-- Receive delays (in s)
     if not utils.isfield(param,'RXdelay'):

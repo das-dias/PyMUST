@@ -62,7 +62,8 @@ def test_txdelay3_on_plain_matrix_param():
 
     tilt_x_rad, tilt_y_rad = 0.1, 0.2
     plane = pymust.txdelay3(param.copy(), tilt_x_rad, tilt_y_rad)
-    expected = (element_x * np.sin(tilt_y_rad) - element_y * np.sin(tilt_x_rad)) / SOUND_SPEED_M_PER_S
+    propagation_x = np.sin(tilt_y_rad) * np.cos(tilt_x_rad)
+    expected = (element_x * propagation_x - element_y * np.sin(tilt_x_rad)) / SOUND_SPEED_M_PER_S
     np.testing.assert_allclose(plane.ravel(), expected - expected.min())
 
 

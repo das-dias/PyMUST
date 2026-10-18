@@ -3,21 +3,21 @@
 How PyMUST defines transducer arrays (1-D, 2-D and 3-D), and how each algorithm uses the
 position of every element.
 
-- Line numbers refer to the commit that adds this report on `dev/arbitrary-3d-space-array-definition`.
-  Those in the §5.1 "Location" column refer to the code before the fixes (commit `2b2a0cd`).
+- **§1 and §6 describe the current code**, which supports arbitrary element positions everywhere.
+- **§2–§5 are the analysis as traced at commit `c4399e6`**, before that support was added. Their line
+  numbers refer to that commit; the §5.1 "Location" column refers to `2b2a0cd`. §6 lists what changed.
 - Paths are relative to the repository root.
 
 ---
 
 ## 1. Summary
 
-| Array kind | Element positions | How positions are produced | Where positions live | Algorithms that accept it |
+| Array kind | Element positions | How positions are produced | Accessor | Algorithms |
 |---|---|---|---|---|
-| **Uniform linear** (1-D, straight line) | $(x_e, 0, 0)$, equal pitch, centred on $x=0$ | Computed from `Nelements`, `pitch`, `radius=inf` | `Param.getElementPositions()` (`src/pymust/utils.py:90`) | `txdelay`, `pfield`, `simus`, `mkmovie`, `dasmtx`, `impolgrid` |
-| **Uniform convex** (1-D, circular arc) | $(x_e, 0, z_e)$ on an arc of radius `radius`; each element tilted by $\theta_e$ | Computed from `Nelements`, `pitch`, `radius<inf` | `Param.getElementPositions()` (`src/pymust/utils.py:103-112`) | same as linear (`dasmtx3`: no) |
-| **Planar 2-D** (matrix, or any point set in $z=0$) | $(x_e, y_e, 0)$, free layout | Given explicitly in `param.elements` (2×E) | Read directly by each 3-D function | `txdelay3`, `pfield3`, `simus3`, `dasmtx3` |
-| **Non-planar 3-D** | $(x_e, y_e, z_e)$ | Given explicitly in `param.elements` (3×E) | `src/pymust/dasmtx3.py:245-254` | **`dasmtx3` only**. `txdelay3`, `pfield3` and `simus3` reject 3-row `elements`. |
-| Custom 2-D positions for `dasmtx` | $(x_e, z_e)$ | `param.elements` (2×E, E×2 or 1×E) | Parsed at `src/pymust/dasmtx.py:347-367`, used at `:393-399` | `dasmtx`, with normals along $+z$ (fixed, §5.1 #1) |
+| **Uniform linear** (1-D) | $(x_e, 0, 0)$, equal pitch, centred on $x=0$ | Translated from `Nelements`, `pitch`, `radius=inf` | `getElementPositions()` / `get_element_coordinates()` | all 2-D functions; 3-D functions as $(x_e, 0, 0)$ |
+| **Uniform convex** (1-D) | $(x_e, 0, z_e)$ on an arc, tilted by $\theta_e$ | Translated from `Nelements`, `pitch`, `radius<inf` | `getElementPositions()` | all 2-D functions (3-D functions: no, they assume $+z$ normals) |
+| **Arbitrary 2-D points** | $(x_e, z_e)$, any layout in the $x$–$z$ plane | `param.elements`: 1 row (x) or 2 rows (x, z) | `getElementPositions()` | `txdelay`, `pfield`, `simus`, `mkmovie`, `dasmtx`, `impolgrid` |
+| **Arbitrary 3-D points** | $(x_e, y_e, z_e)$, any layout (a height field over $(x, y)$ for the virtual source) | `param.elements`: 3 rows (x, y, z), or 2 rows (x, y) with $z_e=0$ | `get_element_coordinates()` | `txdelay3`, `pfield3`, `simus3`, `dasmtx3` |
 
 Every model shares these assumptions:
 
@@ -34,8 +34,9 @@ Every model shares these assumptions:
   - Simulated in **3-D space** when `y` is given. The element height and elevation focus are then
     modelled with a multi-Gaussian beam model (MGBM), not by placing elements along $y$.
 - **2-D arrays** are planar matrix arrays in the $z=0$ plane. They are always simulated in 3-D space.
-- **Arbitrary 3-D element placement** is not supported by any simulator. It is accepted only by the
-  DAS beamformer `dasmtx3`, and even there the element normals are assumed to point along $+z$.
+- **Arbitrary element placement** is supported everywhere (§6): any $(x, z)$ points for the 2-D
+  functions and any $(x, y, z)$ points for the 3-D functions. Element normals still point along $+z$,
+  except for the uniform convex probes.
 
 ---
 
@@ -453,39 +454,129 @@ All six are fixed, and each has a regression test in `tests/test_array_geometry.
 | 5 | `src/pymust/dasmtx3.py:360` | Single-element virtual source uses `hypot(xe-x, ze-z)`, which ignores $y$. | Wrong TX distance for single-element transmits with 2-D arrays. | Full 3-D distance. |
 | 6 | `src/pymust/dasmtx3.py:375` | The pixel-to-normal-line distance `Dn` paired the $x$-slope with $y$ (and the $y$-slope with $z$) and divided by $1+z_x^2+z_y^2$ without a square root. | Even with #4 fixed, the wrong virtual point was picked: TX distance errors up to 1.8 mm. | Geometric distance to the normal line, $\lVert\mathbf{P}-\mathbf{V}\rVert^2-((\mathbf{P}-\mathbf{V})\cdot\hat{\mathbf{n}})^2$, documented in a comment. TX distance error ~5 µm, the same as the element-based path. |
 
-### 5.2 Geometric limits
+### 5.2 Geometric limits (as traced; see §6.5 for what remains)
 
-- **No per-element orientation.**
-  - 1-D arrays have a single in-plane tilt $\theta_e$, and only for convex arrays.
-  - 2-D/3-D arrays have none: `pfield3` uses the global $z$ axis as every element's normal
-    (`pfield3.py:483-486`), and so does the `dasmtx3` aperture (`:426`).
-- **Elements are fixed to $z_e=0$** in `pfield3` (`cosT` uses $z_p$, `:483`), `simus3` (`:307`) and
-  `txdelay3` (`:251`). Only `dasmtx3` reads $z_e$.
+These were the limits at commit `c4399e6`:
+- **Elements fixed to $z_e=0$** in `pfield3`, `simus3` and `txdelay3`.
+- **Array extent from `pitch`/`Nelements`** in `mkmovie`, `impolgrid` and `txdelay`.
+- **No per-element orientation or size.**
+
+§6 removes the first two.
+
+### 5.3 What an arbitrary array definition had to touch
+
+§6 implements this for positions. Per-element orientation, a normal $\mathbf{n}_e$ with in-plane axes
+$\mathbf{u}_e,\mathbf{v}_e$, remains future work (§6.5).
+
+---
+
+## 6. Arbitrary element positions (current code)
+
+Every algorithm now reads the element positions from one of two accessors and uses the full position
+vector. No algorithm recomputes positions from `pitch`, drops or zeroes a coordinate, or writes back
+to `param.elements`. Pre-made probes (`getparam`, or `pitch`/`Nelements`/`radius`) are translated
+into the same position vector by the accessors.
+
+The acceptance test is **translation invariance**: shift every element and every field point,
+scatterer, focus or pixel by the same vector, and every output stays unchanged. This is checked for
+every function by `tests/test_arbitrary_elements.py`.
+
+### 6.1 Defining an array
+
+| `param.elements` | 2-D functions (`txdelay`, `pfield`, `simus`, `mkmovie`, `dasmtx`, `impolgrid`) | 3-D functions (`txdelay3`, `pfield3`, `simus3`, `dasmtx3`) |
+|---|---|---|
+| absent | uniform linear/convex array from `pitch`, `Nelements`, `radius` | uniform linear array as $(x_e, 0, 0)$; convex is rejected |
+| 1 row | $x$, with $z=0$ | $x$, with $y=z=0$ |
+| 2 rows | $(x, z)$ | $(x, y)$, with $z=0$ |
+| 3 rows | $(x, y, z)$ with $y=0$ required | $(x, y, z)$ |
+
+- **Orientation:** E×k arrays are also accepted. When `elements` is given, `radius` must be `inf` or
+  absent.
+- **`Nelements`:** if set, it must match the number of elements.
+- **`pitch`:** no longer required; `width` is required instead.
+
+```python
+import numpy as np
+import pymust
+from pymust.utils import Param
+
+# Arbitrary 2-D points: 64 elements on a shallow parabola in the x-z plane
+x = (np.arange(64) - 31.5) * 300e-6
+param = Param(fc=5e6, bandwidth=70, width=270e-6, elements=np.stack([x, 2e-3 * (x / x.max())**2]))
+delays = pymust.txdelay(0, 30e-3, param)          # focused; pfield/simus/dasmtx use the same positions
+
+# Arbitrary 3-D points: 32x32 matrix on a spherical cap of radius 20 mm
+g = (np.arange(32) - 15.5) * 300e-6
+xe, ye = (a.ravel() for a in np.meshgrid(g, g))
+ze = 20e-3 - np.sqrt(20e-3**2 - xe**2 - ye**2)
+param3 = Param(fc=3e6, bandwidth=70, width=270e-6, height=270e-6, elements=np.stack([xe, ye, ze]))
+delays3 = pymust.txdelay3(param3, 0.1, 0.2)       # plane wave tilted about both x and y
+fig = pymust.utils.plot_transducer_array(param3)   # interactive 3-D boxes in Jupyter
+```
+
+### 6.2 Accessors (`src/pymust/utils.py`)
+
+- **`Param.read_elements()`:** returns `param.elements` as a (rows, E) copy and validates it.
+- **`Param.getElementPositions()`:** used by the 2-D functions; returns `xe, ze, THe, h` (1×E).
+  - With `elements` given, positions are taken as given and $\theta_e = 0$, so normals point along $+z$.
+  - Otherwise it applies the uniform linear/convex formulas of §2.3.
+- **`Param.get_element_coordinates()`:** used by the 3-D functions; returns `xe, ye, ze` (length E).
+
+### 6.3 What changed in each function
+
+| Function | Change |
+|---|---|
+| `dasmtx` | Local `elements` parsing removed. The TX aperture is interpolated with the real $z_e$. The receive aperture uses $z_p-z_e$, so $\lvert x_p-x_e\rvert\le (z_p-z_e)/2F$, including the RX-angle option. |
+| `pfield` | `pitch` is only needed without `elements`. Out-of-field means $z_p<\min_e z_e$. |
+| `simus` | The element count comes from the positions. |
+| `txdelay` | Plane wave: $\tau_e=(x_e\sin\text{tilt}+z_e\cos\text{tilt})/c$. Circular wave: aperture $L=\operatorname{ptp}(x_e)$, origin relative to the array centre, distance $\lVert(x_e-x_0,\ z_e-z_0)\rVert$. Focused: the side is decided relative to the array centre. |
+| `mkmovie`, `impolgrid` | Array width $L=\operatorname{ptp}(x_e)$. `impolgrid` centres its grid on the array, and its pitch defaults to the mean element spacing. |
+| `pfield3` | $r$ and $\cos T$ use $z_p-z_e$. Out-of-field means $z_p<\min_e z_e$. Elements no longer radiate backwards (obliquity clamped where $\cos T\le0$, as in `pfield`). |
+| `simus3` | Positions come from the accessor, and the maximum distance uses $z_p-z_e$. |
+| `txdelay3` | Plane wave: $\tau_e=\hat k\cdot\mathbf c_e/c$ with $\hat k=(\sin t_y\cos t_x,\ -\sin t_x,\ \cos t_y\cos t_x)$, the rotation used by the diverging option. **This changes the delays when both tilts are non-zero:** the earlier x-term lacked $\cos t_x$. Focus point and focus line use $z_e$. The diverging-wave virtual source is placed relative to the array centre. |
+| `dasmtx3` | Positions come from the accessor, so `param.elements` is no longer transposed in place. `vxdcr3` handles non-planar arrays (§6.4). `trigrad` triangulates relative, rounded positions, so its gradients do not depend on where the array is. |
+
+`examples/txdelay3_tilted_delays.ipynb` plots the `txdelay3` delays as 3-D bars:
+- tilts in both directions;
+- the change from the earlier formula, which is up to 28 ns for a 12×12, 300 µm array at 0.3/0.3 rad;
+- a curved array, whose $z_e$ now shapes the delays.
+
+### 6.4 Virtual source on a non-planar array (`vxdcr3`)
+
+**Envelope condition.** The virtual point $V_e$ lies at distance $cT_e$ from element $e$. It is where
+that element's sphere touches the envelope of all the spheres. Differentiating
+$(x_e-x_V)^2+(y_e-y_V)^2+(z_e-z_V)^2=c^2T^2$ along the array surface $z_e(x, y)$, at fixed $V$, gives
+
+$$a+h\,g_x=p_x,\qquad b+h\,g_y=p_y$$
+
+where:
+- $a = x_e-x_V$, $b = y_e-y_V$ and $h = z_e-z_V \ge 0$;
+- $g = \nabla z_e$ is the slope of the array surface;
+- $p = \tfrac{c^2}{2}\nabla T^2$.
+
+This is the same condition the 2-D `vxdcr` solves with `fsolve`.
+
+**Closed form.** Substituting $a$ and $b$ into the sphere equation gives a quadratic in $h$, whose
+non-negative root is
+
+$$h=\frac{p\cdot g+\sqrt{(p\cdot g)^2-(1+|g|^2)(|p|^2-c^2T^2)}}{1+|g|^2}$$
+
+It reduces to the planar formula when $g=0$.
+
+**Accuracy.** For a 16×16 array on a 20 mm spherical cap, with a known diverging source, the virtual
+points lie on the true wavefront sphere to within 5 µm.
+
+**Limit.** The elements must form a height field over $(x, y)$.
+
+### 6.5 Remaining limits
+
+- **Orientation:** custom elements face $+z$; only the uniform convex probes carry a tilt $\theta_e$.
+  Per-element orientation would need a normal $\mathbf n_e$ and in-plane axes
+  $\mathbf u_e,\mathbf v_e$, used in the directivity, the obliquity, the sub-element offsets and the
+  apertures.
 - **Uniform element size:** a single scalar `width` and `height` for the whole array.
-- **Uniform-array formulas:** `mkmovie`, `impolgrid` and `pfield`'s convex out-of-field mask derive
-  the array extent from `pitch`, `Nelements` and `radius`, not from element coordinates.
-- **Plaid-grid requirement:** `txdelay3` "Diverging Wave" (`:208-212`).
-
-### 5.3 What an arbitrary 3-D array definition would have to touch
-
-Each item below is a place where the code currently assumes $z_e=0$, a $+z$ normal, or a uniform
-1-D array:
-
-- **Define positions once.** One accessor should return per-element centres $\mathbf{c}_e$ (E×3),
-  for every array type. Today positions come from `getElementPositions()` for 1-D arrays and from
-  `param.elements` for 2-D arrays.
-- **Add a per-element frame.** Each element needs a normal $\mathbf{n}_e$ and in-plane axes
-  $\mathbf{u}_e,\mathbf{v}_e$. The convex $\theta_e$ is the special case
-  $\mathbf{n}_e=(\sin\theta_e,0,\cos\theta_e)$.
-- **`pfield3` geometry** (`:477-486`):
-  - Express $\mathbf{d}=\mathbf{x}_p-\mathbf{c}_e-\mathbf{o}_{e,s}$ in the element frame:
-    $\cos T=\mathbf{d}\cdot\mathbf{n}_e/r$, and $\cos\Phi$, $\sin\Phi$ from
-    $\mathbf{d}\cdot\mathbf{u}_e$ and $\mathbf{d}\cdot\mathbf{v}_e$.
-  - Rotate the sub-element offsets: $\mathbf{o}_{e,m,n}=u_m\mathbf{u}_e+v_n\mathbf{v}_e$.
-  - Replace the out-of-field test $z_p<0$ with $\mathbf{d}\cdot\mathbf{n}_e<0$.
-- **`simus3`:** the maximum distance (`:307`) should use the full $\lVert\mathbf{x}_p-\mathbf{c}_e\rVert$.
-- **`txdelay3`:** focus and plane laws with $z_e$: $d_e=\lVert\mathbf{c}_e-\mathbf{x}_0\rVert$, and
-  plane-wave $\tau_e=\mathbf{c}_e\cdot\hat{\mathbf{k}}/c$.
-- **`dasmtx3`:** use $\mathbf{n}_e$ in the aperture test instead of $|z_p-z_e|$ along $z$.
-- **No other changes needed:** the frequency-loop matrices ($\mathbf{R}_k$, $\mathbf{w}_k$) and the
-  JAX kernels only consume these geometry tensors.
+- **Plaid-grid requirement:** `txdelay3` "Diverging Wave" still needs the elements on a plaid
+  $(x, y)$ grid.
+- **Virtual source:** `vxdcr3` needs a height-field array.
+- **Off-plane elements in 2-D functions:** `pfield` and `dasmtx` reject them ($y_e \ne 0$); use the
+  3-D functions instead.
