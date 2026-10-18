@@ -170,6 +170,8 @@ def txdelay(*args):
         tilt = np.array(args[1]).reshape((-1, 1)) # Check if it is not a vector
         assert np.all(np.abs(tilt)<np.pi/2), 'The tilt angles must verify |tilt| < pi/2'
         if isLINEAR:
+            # VERIFICATION PENDING: the z*cos(tilt) term for arrays with element
+            # depths still has to be checked against a simulated wavefront (PFIELD)
             delays = (x*np.sin(tilt) + z*np.cos(tilt))/c
         else:
             #% we have a CONVEX ARRAY
@@ -205,6 +207,7 @@ def txdelay(*args):
         assert np.all(np.logical_and(width>0, width<np.pi)), 'The width angles must verify width > 0 and width < pi'
         L = np.max(x)-np.min(x) # array width
         #%-- Origo (angles2origo returns it relative to the array centre)
+        # VERIFICATION PENDING for arrays that are not centred on the origin
         x0,z0 = angles2origo(L,tilt,width)
         #%--
         delays = np.sqrt((x-x_center-x0)**2 + (z-z_center-z0)**2)/c

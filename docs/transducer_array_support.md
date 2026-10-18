@@ -568,7 +568,35 @@ points lie on the true wavefront sphere to within 5 µm.
 
 **Limit.** The elements must form a height field over $(x, y)$.
 
-### 6.5 Remaining limits
+### 6.5 Verification pending: tilt equations and delay profiles
+
+The delay laws changed in this work are tested for internal consistency only. The tests check
+translation invariance, the analytic formulas themselves, and a known diverging source for `vxdcr3`.
+They have **not yet been verified against an independent reference**.
+
+**What still needs checking:**
+- **`txdelay3` plane wave:** the rotation convention, TILTx about x and then TILTy about y, which
+  gives $\hat k=(\sin t_y\cos t_x,\ -\sin t_x,\ \cos t_y\cos t_x)$.
+  - It must be confirmed against MATLAB MUST, whose plane-wave formula
+    $(x_e\sin t_y - y_e\sin t_x)/c$ this replaces.
+  - It must also be confirmed against the actual steering direction of the `pfield3` main lobe,
+    especially when both tilts are non-zero.
+- **`txdelay` plane wave with element depths:** the $z_e\cos(\text{tilt})$ term for non-flat 2-D
+  arrays. Check that the simulated wavefront (`pfield`) is planar.
+- **Origins relative to the array centre:**
+  - `txdelay` circular wave: its origin is now placed relative to the array's bounding-box centre.
+  - `txdelay3` diverging wave: its virtual source is likewise relative to that centre.
+  - Focused laws in both functions: the side is decided relative to the same centre.
+
+  All three are exact for centred uniform arrays, but need checking for off-centre and irregular arrays.
+- **Delay profiles:** check them, for example with the bar plots of
+  `examples/txdelay3_tilted_delays.ipynb`, against beam directions and focal positions measured on
+  simulated fields.
+
+Until this is done, treat delays from these laws with both tilts non-zero, or on non-centred or
+non-planar arrays, as provisional.
+
+### 6.6 Remaining limits
 
 - **Orientation:** custom elements face $+z$; only the uniform convex probes carry a tilt $\theta_e$.
   Per-element orientation would need a normal $\mathbf n_e$ and in-plane axes

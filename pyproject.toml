@@ -1,11 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0",  "setuptools-scm>=8"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
-
-[tool.setuptools_scm]
 
 [project]
 name = "PyMUST"
+version = "0.1.10"
 authors = [
   {name="Damien Garcia", email="damien.garcia@creatis.insa-lyon.fr"},
   {name = "Gabriel Bernardino", email = "gabriel.bernardino@upf.edu"},
@@ -22,7 +21,7 @@ dependencies = [
   "numpy",
   "scipy",
 ]
-dynamic = ["license", "version"]
+dynamic = ["license"]
 
 [project.optional-dependencies]
 jax = ["jax"]

@@ -203,6 +203,10 @@ def txdelay3(*args):
         kx = np.sin(tilty)*np.cos(tiltx)
         ky = -np.sin(tiltx)
         kz = np.cos(tilty)*np.cos(tiltx)
+        # VERIFICATION PENDING: the rotation convention (TILTx about x first, then
+        # TILTy about y) and the resulting delay profiles still have to be checked
+        # against MATLAB MUST and against the steering direction of the PFIELD3 main
+        # lobe, in particular when both tilts are non-zero and for non-planar arrays.
         delays = (kx*xe + ky*ye + kz*ze)/c
     #-----
     elif option == 'Diverging Wave':
@@ -246,7 +250,8 @@ def txdelay3(*args):
         # r = scipy.optimize.minimize_scalar(myfun, bounds=(0, 2*np.pi), method='bounded', options={'xatol': 1e-6, 'fatol': 1e-6}) # DR : alternative (not tried)
 
         # position of the virtual source, and TX delays
-        # (relative to the array centre)
+        # (relative to the array centre; VERIFICATION PENDING for arrays that are
+        # not centred on the origin)
         cos_el = np.cos(el)
         x0 = x_center + r*cos_el*np.cos(az)
         y0 = y_center + r*cos_el*np.sin(az)
