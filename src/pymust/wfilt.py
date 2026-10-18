@@ -1,7 +1,8 @@
-import numpy as np,scipy, logging
+import numpy as np,scipy, scipy.fft, logging
 import typing
+from . import utils
 
-def wfilt(SIG: np.ndarray, method: str, n: int) -> np.ndarray:
+def wfilt(SIG: np.ndarray, method: str, n: int, backend: utils.BackendName = "numpy") -> np.ndarray:
     """
     %WFILT   Wall filtering (or clutter filtering)
     %   fSIG = WFILT(SIG,METHOD,N) high-pass (wall) filters the RF or I/Q
@@ -48,7 +49,9 @@ def wfilt(SIG: np.ndarray, method: str, n: int) -> np.ndarray:
 
     #%-- Check the input arguments
 
-    assert SIG.ndims ==3 and SIG.shape[2] >= 2,'SIG must be a 3-D array with SIG.shape[2]>=2';
+    xp = utils.get_array_module(backend)
+    SIG = xp.asarray(SIG)
+    assert SIG.ndim ==3 and SIG.shape[2] >= 2,'SIG must be a 3-D array with SIG.shape[2]>=2';
     assert isinstance(n, int) and n >= 0, 'N must be a nonnegative integer.'
 
     siz0 = SIG.shape
@@ -64,13 +67,13 @@ def wfilt(SIG: np.ndarray, method: str, n: int) -> np.ndarray:
         
         # If the degree is 0, the mean is removed.
         if n==0:
-            return  SIG-np.mean(SIG,2);
+            return np.asarray(SIG-xp.mean(SIG,2,keepdims=True))
     
         # GB TODO: use Legendre Matrix instead (more numerically stable and efficient)
         V = np.vander(np.linspace(0,1,N), n+1) # Vandermonde matrix
         A = np.eye(N) - V @ np.linalg.pinv(V) # Projection matrix
         # Multiply along the slow-time dimension
-        SIG = np.einsum('ij,nkj->nki', A, SIG)
+        SIG = xp.einsum('ij,nkj->nki', A, SIG)
        
 
     elif method == 'dct':
@@ -83,12 +86,12 @@ def wfilt(SIG: np.ndarray, method: str, n: int) -> np.ndarray:
         
         #% If the degree is 0, the mean is removed.
         if n==1:
-            return SIG-np.mean(SIG,2);
+            return np.asarray(SIG-xp.mean(SIG,2,keepdims=True))
         
         D = scipy.fft.dct(np.eye(N), norm='ortho', axis=0)[n:, :] #DCT matrix, only high frequencies
         D= D.T@D # Create the projection matrix
         #Multiply along the slow-time dimension
-        SIG = np.einsum('ij,nkj->nki', D, SIG)        
+        SIG = xp.einsum('ij,nkj->nki', D, SIG)
         
     elif method == 'svd':
         #% ----------------------------------------
@@ -101,10 +104,10 @@ def wfilt(SIG: np.ndarray, method: str, n: int) -> np.ndarray:
         #% Each column represents a column-rearranged frame.
         SIG = SIG.reshape((-1, siz0[2])) 
 
-        U,S,V = scipy.svd(SIG,full_matrices = False); # SVD decomposition
-        SIG = U[:,n:N] @ S[n:N,n:N] @V[:,n:N].T; # high-pass filtering
+        U,S,Vh = xp.linalg.svd(SIG,full_matrices = False) # SVD decomposition
+        SIG = (U[:,n:N]*S[n:N]) @ Vh[n:N,:] # high-pass filtering
         SIG = SIG.reshape(siz0)        
     else:
         raise ValueError('METHOD must be "poly", "dct", or "svd".')
 
-    return SIG
+    return np.asarray(SIG)

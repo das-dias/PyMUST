@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np,scipy, scipy.signal, typing
 from . import utils
-def iq2doppler(IQ: np.ndarray, param: utils.Param, M: typing.Union[int,np.ndarray] = 1, lag: int = 1) -> tuple[np.ndarray, np.ndarray]:
+def iq2doppler(IQ: np.ndarray, param: utils.Param, M: typing.Union[int,np.ndarray] = 1, lag: int = 1, backend: utils.BackendName = "numpy") -> tuple[np.ndarray, np.ndarray]:
     """
     %IQ2DOPPLER   Convert I/Q data to color Doppler
     %   VD = IQ2DOPPLER(IQ,PARAM) returns the Doppler velocities from the I/Q
@@ -97,30 +97,38 @@ def iq2doppler(IQ: np.ndarray, param: utils.Param, M: typing.Union[int,np.ndarra
 
     #%--- AUTO-CORRELATION METHOD ---
     #% Eq. 55 in Loupas et al. (IEEE UFFC 42,4;1995)
+    xp = utils.get_array_module(backend)
+    IQ = xp.asarray(IQ)
     IQ1 = IQ[:,:,: -lag]
     IQ2 = IQ[:,:,lag:]
 
-    AC = np.sum(IQ1*np.conj(IQ2),2)  # ensemble auto-correlation
+    AC = xp.sum(IQ1*xp.conj(IQ2),2)  # ensemble auto-correlation
 
     if  M[0] != 1 or M[1] != 1: #isequal([M(1) M(2)],[1 1]) % spatial weighted average
         h = scipy.signal.windows.hamming(M[0]).reshape((-1, 1))*scipy.signal.windows.hamming(M[1]).reshape((1, -1))
-        AC = scipy.signal.convolve2d(AC,h, 'same', boundary='symmetric')
+        AC = convolve_symmetric_same(AC, h, backend)
 
     #%-- Doppler velocity
     VN = c*PRF/4/fc/lag; #% Nyquist velocity
-    vel = -VN*(np.angle(AC))/np.pi; 
+    vel = -VN*(xp.angle(AC))/np.pi;
 
 
     #%-- Doppler variance
-    P = np.sum((IQ.real)**2+(IQ.imag)**2,2) #% power
+    P = xp.sum((IQ.real)**2+(IQ.imag)**2,2) #% power
     if  M[0] != 1 or M[1] != 1: # % spatial weighted average
-        P = scipy.signal.convolve2d(P,h, 'same', boundary='symmetric')
+        P = convolve_symmetric_same(P, h, backend)
 
-    variance = 2*(VN/np.pi)**2*(1-np.abs(AC)/P)
+    variance = 2*(VN/np.pi)**2*(1-xp.abs(AC)/P)
     #%-- cf. Eq. 7.48 in Estimation of Blood Velocities Using Ultrasound:
     #%   A Signal Processing Approach by Jørgen Arendt Jensen,
     #%   Cambridge University Press, 1996
-    return vel, variance
+    return np.asarray(vel), np.asarray(variance)
+
+def convolve_symmetric_same(image, kernel, backend: utils.BackendName = "numpy"):
+    if backend == "jax":
+        from . import jax_backend
+        return jax_backend.convolve_symmetric_same(image, kernel)
+    return scipy.signal.convolve2d(image, kernel, 'same', boundary='symmetric')
 
 def getNyquistVelocity(param, lag=  1):
     if not utils. isfield(param,'c'):

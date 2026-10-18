@@ -3,7 +3,7 @@ import numpy as np
 import scipy, scipy.interpolate
 from . import  utils
 
-def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varargin) -> scipy.sparse.spmatrix:
+def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varargin, backend: utils.BackendName = "numpy") -> scipy.sparse.spmatrix:
     """
     DASMTX3   Delay-and-sum matrix for 3-D imaging with a matrix array
     M = DASMTX3(SIG,X,Y,Z,DELAYS,PARAM) returns the numel(X)-by-numel(SIG)
@@ -327,9 +327,10 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
 
 
     t0 = param.t0
-    x = x.reshape((-1,1), order = 'F')
-    y = y.reshape((-1,1), order = 'F')
-    z = z.reshape((-1,1), order = 'F')
+    xp = utils.get_array_module(backend)
+    x = xp.asarray(x.reshape((-1,1), order = 'F'))
+    y = xp.asarray(y.reshape((-1,1), order = 'F'))
+    z = xp.asarray(z.reshape((-1,1), order = 'F'))
     Nx = x.size
 
     #%------------------------------------------------------%
@@ -342,12 +343,12 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
     
     #-- TX and RX distances
     dxT = x-xe; dyT = y-ye; dzT = z-ze
-    dRX = np.sqrt(dxT**2 + dyT**2 + dzT**2)
+    dRX = xp.sqrt(dxT**2 + dyT**2 + dzT**2)
     
     if  param.passive:
-        dTX = np.zeros_like(x)
+        dTX = xp.zeros_like(x)
     elif not useVirtualSource:
-        dTX = np.min(delaysTX*c + dRX, axis = 1).reshape((-1,1), order = 'F')
+        dTX = xp.min(delaysTX*c + dRX, axis = 1).reshape((-1,1), order = 'F')
     else:
         #%-- First check which elements were transmitting
         WasTransmitting = np.logical_not(np.isnan(delaysTX))
@@ -384,8 +385,9 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
     dTX, dRX = None, None # clear dTX and dRX
     
     #-- Corresponding fast-time indices
-    idxt = (tau-t0.reshape((1, -1)))*fs
-    idxt = idxt.astype(np.float64) # in case tau is in single precision
+    # float64 on the host: sparse column indices reach nl*nc, beyond float32 resolution
+    idxt = np.asarray((tau-t0.reshape((1, -1)))*fs, dtype = np.float64)
+    tau = np.asarray(tau)
 
     #-- In-range indices:
     method = method.lower()  
@@ -407,8 +409,8 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
     #-- Aperture (using the f-number):
     if (fNum != 0).any():
         #-- for a planar array
-        Iaperture = np.logical_and(np.abs(dxT)<=(np.abs(dzT)/2/fNum[0]),np.abs(dyT)<=(np.abs(dzT)/2/fNum[1]))
-        I = np.logical_and(I,Iaperture)
+        Iaperture = xp.logical_and(xp.abs(dxT)<=(xp.abs(dzT)/2/fNum[0]),xp.abs(dyT)<=(xp.abs(dzT)/2/fNum[1]))
+        I = np.logical_and(I,np.asarray(Iaperture))
     
     dxT, dyT, dzT = None, None, None # clear dxT dyT dzT
 

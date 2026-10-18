@@ -4,7 +4,7 @@ from . import utils, smoothn
 import numpy as np, scipy
 
 
-def sptrack(I: np.ndarray, param: utils.Param) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def sptrack(I: np.ndarray, param: utils.Param, backend: utils.BackendName = "numpy") -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     %SPTRACK   Speckle tracking using Fourier-based cross-correlation
     %   [Di,Dj] = SPTRACK(I,PARAM) returns the motion field [Di,Dj] that occurs
@@ -153,6 +153,8 @@ def sptrack(I: np.ndarray, param: utils.Param) -> tuple[np.ndarray, np.ndarray, 
     assert param.iminc>0 and isinstance(param.iminc, int), 'PARAM.iminc must be a positive integer.'
     assert param.iminc<P, 'PARAM.iminc must be < I.shape[2].'
 
+    assert backend in ('numpy', 'jax'), 'BACKEND must be "numpy" or "jax".'
+
     if not utils.isfield(param,'subpix'): # Step increment
         param.subpix = 'PF'
 
@@ -220,112 +222,124 @@ def sptrack(I: np.ndarray, param: utils.Param) -> tuple[np.ndarray, np.ndarray, 
         
         C = np.zeros(siz); # will contain the correlation coefficients
         
-        # Iterate over all centers
-        for i, pixel_i in enumerate(i_array):
-            for j, pixel_j in enumerate(j_array):
-                #-- Split the images into small windows
-                if pixel_i+di[i,j]>=0 and pixel_j+dj[i,j]>=0 and \
-                        pixel_i+di[i,j]+m<M  and pixel_j+dj[i,j]+n<N:
+        if backend == 'jax':
+            from . import jax_backend
+            row_starts, col_starts = np.meshgrid(i_array, j_array, indexing = 'ij')
+            in_bounds = (row_starts+di>=0) & (col_starts+dj>=0) & (row_starts+di+m<M) & (col_starts+dj+n<N)
+            di, dj, C = (np.array(values, dtype = float).reshape(siz) for values in jax_backend.track_windows(
+                I, row_starts.ravel(), col_starts.ravel(),
+                np.where(in_bounds, di, 0).astype(int).ravel(), np.where(in_bounds, dj, 0).astype(int).ravel(),
+                H, window_rows = int(m), window_cols = int(n), frame_step = param.iminc))
+            di[~in_bounds] = np.nan
+            dj[~in_bounds] = np.nan
+            C[~in_bounds] = 0
+        else:
+            # Iterate over all centers
+            for i, pixel_i in enumerate(i_array):
+                for j, pixel_j in enumerate(j_array):
+                    #-- Split the images into small windows
+                    if pixel_i+di[i,j]>=0 and pixel_j+dj[i,j]>=0 and \
+                            pixel_i+di[i,j]+m<M  and pixel_j+dj[i,j]+n<N:
                     
-                    I1w = I[pixel_i:pixel_i+m,\
-                            pixel_j:pixel_j+n,\
-                            : -param.iminc]
-                    I2w=I [pixel_i + int(di[i,j]):pixel_i+ int(di[i,j]) +m,\
-                            pixel_j + int(dj[i,j]) : pixel_j +  int(dj[i,j])+n,\
-                            param.iminc:]
-                else:
-                    di[i,j] = np.nan; 
-                    dj[i,j] = np.nan;
-                    continue
+                        I1w = I[pixel_i:pixel_i+m,\
+                                pixel_j:pixel_j+n,\
+                                : -param.iminc]
+                        I2w=I [pixel_i + int(di[i,j]):pixel_i+ int(di[i,j]) +m,\
+                                pixel_j + int(dj[i,j]) : pixel_j +  int(dj[i,j])+n,\
+                                param.iminc:]
+                    else:
+                        di[i,j] = np.nan; 
+                        dj[i,j] = np.nan;
+                        continue
                 
-                if np.any(np.isnan(I1w+I2w)):
-                    di[i,j] = np.nan; 
-                    dj[i,j] = np.nan;
-                    continue
+                    if np.any(np.isnan(I1w+I2w)):
+                        di[i,j] = np.nan; 
+                        dj[i,j] = np.nan;
+                        continue
                 
-                #%-- FFT-based cross-correlation
-                # Note GB: could use real fft, but it s a bit of a mess to change everything
-                R = scipy.fft.fft2((I2w-np.mean(I2w)) *H[..., None], axes = (0, 1)) *  \
-                    np.conj(scipy.fft.fft2((I1w-np.mean(I1w))*H[..., None], axes = (0, 1))) #GB: Recheck, maximum intensity, or absolute?
+                    #%-- FFT-based cross-correlation
+                    # Note GB: could use real fft, but it s a bit of a mess to change everything
+                    R = scipy.fft.fft2((I2w-np.mean(I2w)) *H[..., None], axes = (0, 1)) *  \
+                        np.conj(scipy.fft.fft2((I1w-np.mean(I1w))*H[..., None], axes = (0, 1))) #GB: Recheck, maximum intensity, or absolute?
 
-                #- 
-                R2 = R/(np.abs(R)+1e-6); # normalized x-corr
-                R2 = np.mean(R2, 2)
-                R2 = scipy.fft.ifft2(R2, axes = (0, 1)).real
-                C[i,j] = np.max(R2)
-                # C = correlation coefficients: will be used as weights in SMOOTHN
-                #--
-                R = np.sum(R,2); # ensemble correlation
-                R = scipy.fft.ifft2(R, axes = (0, 1)).real; # x-correlation
+                    #- 
+                    R2 = R/(np.abs(R)+1e-6); # normalized x-corr
+                    R2 = np.mean(R2, 2)
+                    R2 = scipy.fft.ifft2(R2, axes = (0, 1)).real
+                    C[i,j] = np.max(R2)
+                    # C = correlation coefficients: will be used as weights in SMOOTHN
+                    #--
+                    R = np.sum(R,2); # ensemble correlation
+                    R = scipy.fft.ifft2(R, axes = (0, 1)).real; # x-correlation
 
-                #-- Peak detection + Pixelwise displacement
-                #- Circular shift (i.e. make the peak centered, same as FFTSHIFT):
-                m1 = int(np.floor(m/2)); 
-                n1 = int(np.floor(n/2));
-                #R = R[[m-m1:m, :m-m1],[n-n1:n, :n-n1]]
-                R = scipy.fft.fftshift(R, axes = (0, 1))
+                    #-- Peak detection + Pixelwise displacement
+                    #- Circular shift (i.e. make the peak centered, same as FFTSHIFT):
+                    m1 = int(np.floor(m/2)); 
+                    n1 = int(np.floor(n/2));
+                    #R = R[[m-m1:m, :m-m1],[n-n1:n, :n-n1]]
+                    R = scipy.fft.fftshift(R, axes = (0, 1))
 
-                # --
-                #Get the index of the maximum value
-                di0, dj0 =np.unravel_index(R.argmax(), R.shape)
+                    # --
+                    #Get the index of the maximum value
+                    di0, dj0 =np.unravel_index(R.argmax(), R.shape)
 
 
-                #-- Total displacement (with pixelwise increment)
-                di[i,j] = di[i,j] + di0-m1
-                dj[i,j] = dj[i,j] + dj0-n1
+                    #-- Total displacement (with pixelwise increment)
+                    di[i,j] = di[i,j] + di0-m1
+                    dj[i,j] = dj[i,j] + dj0-n1
 
-                #%--- Subpixel-motion correction ---%
-                if param.subpix == 'PF' or kk< param.winsize.shape[0]:
-                    #%
-                    #% Parabolic Peak Fitting)
-                    #%
-                    if di0>0 and di0<m -1:
-                        di[i,j] = di[i,j] + (R[di0-1,dj0]-R[di0+1,dj0]) / \
-                            (2*R[di0-1,dj0]-4*R[di0,dj0]+2*R[di0+1,dj0]);
-                    
-                    if dj0>0 and dj0<n - 1:
-                        dj[i,j] = dj[i,j] + (R[di0,dj0-1]-R[di0,dj0+1]) / \
-                            (2*R[di0,dj0-1]-4*R[di0,dj0]+2*R[di0,dj0+1]);
-
-                    
-                elif param.subpix == 'OF':
-                    #%
-                    #% Optical flow (Lucas Kanade)
-                    #%
-                    if pixel_i+di[i,j]>0 and pixel_j+dj[i,j]>0 and \
-                            pixel_i+di[i,j]+m-2<M and pixel_j+dj[i,j]+n-2<N:
-                        #%--
-                        I2w = I[pixel_i+di[i,j]:pixel_i+di[i,j]+m-1, 
-                                pixel_j+dj[i,j]:pixel_j+dj[i,j]+n-1,
-                                1+param.iminc:,:]
-                        dIdtw = I2w-I1w;
-                        dIdiw = dIdi[ pixel_i+di[i,j]:pixel_i+di[i,j]+m-1, 
-                                     pixel_j+dj[i,j]:pixel_j+dj[i,j]+n-1,
-                                     1+param.iminc,:];
-                        
-
-                        dIdjw = dIdj[ pixel_i+di[i,j]:pixel_i+di[i,j]+n-1,
-                                     pixel_j+dj[i,j]:pixel_j+dj[i,j]+m-1,
-                                     1+param.iminc:,:];
-                        #%--
-                        a = np.sum(dIdiw**2); 
-                        d = np.sum(dIdjw**2);
-                        b = np.sum(dIdiw*dIdjw);
-                        A = np.array([[a, d],[d, b]])
-                        b = -np.array([np.sum(dIdiw*dIdtw),  np.sum(dIdjw*dIdtw)])
-                        #% tmp = A\b;
-                        tmp = scipy.linalg.lstsq(A,b);
-                        #%--
-                        di[i,j] = di[i,j] + tmp[0];
-                        dj[i,j] = dj[i,j] + tmp[1];
-                    else: #% (parabolic peak fitting)
+                    #%--- Subpixel-motion correction ---%
+                    if param.subpix == 'PF' or kk< param.winsize.shape[0]:
+                        #%
+                        #% Parabolic Peak Fitting)
+                        #%
                         if di0>0 and di0<m -1:
-                            di[i,j] = di[i,j] + (R[di0-1,dj0]-R[di0+1,dj0])/\
+                            di[i,j] = di[i,j] + (R[di0-1,dj0]-R[di0+1,dj0]) / \
                                 (2*R[di0-1,dj0]-4*R[di0,dj0]+2*R[di0+1,dj0]);
-                        
-                        if dj0>1 and dj0<n:
-                            dj[i,j] = dj[i,j] + (R[di0,dj0-1]-R[di0,dj0+1])/\
+                    
+                        if dj0>0 and dj0<n - 1:
+                            dj[i,j] = dj[i,j] + (R[di0,dj0-1]-R[di0,dj0+1]) / \
                                 (2*R[di0,dj0-1]-4*R[di0,dj0]+2*R[di0,dj0+1]);
+
+                    
+                    elif param.subpix == 'OF':
+                        #%
+                        #% Optical flow (Lucas Kanade)
+                        #%
+                        if pixel_i+di[i,j]>0 and pixel_j+dj[i,j]>0 and \
+                                pixel_i+di[i,j]+m-2<M and pixel_j+dj[i,j]+n-2<N:
+                            #%--
+                            I2w = I[pixel_i+di[i,j]:pixel_i+di[i,j]+m-1, 
+                                    pixel_j+dj[i,j]:pixel_j+dj[i,j]+n-1,
+                                    1+param.iminc:,:]
+                            dIdtw = I2w-I1w;
+                            dIdiw = dIdi[ pixel_i+di[i,j]:pixel_i+di[i,j]+m-1, 
+                                         pixel_j+dj[i,j]:pixel_j+dj[i,j]+n-1,
+                                         1+param.iminc,:];
+                        
+
+                            dIdjw = dIdj[ pixel_i+di[i,j]:pixel_i+di[i,j]+n-1,
+                                         pixel_j+dj[i,j]:pixel_j+dj[i,j]+m-1,
+                                         1+param.iminc:,:];
+                            #%--
+                            a = np.sum(dIdiw**2); 
+                            d = np.sum(dIdjw**2);
+                            b = np.sum(dIdiw*dIdjw);
+                            A = np.array([[a, d],[d, b]])
+                            b = -np.array([np.sum(dIdiw*dIdtw),  np.sum(dIdjw*dIdtw)])
+                            #% tmp = A\b;
+                            tmp = scipy.linalg.lstsq(A,b);
+                            #%--
+                            di[i,j] = di[i,j] + tmp[0];
+                            dj[i,j] = dj[i,j] + tmp[1];
+                        else: #% (parabolic peak fitting)
+                            if di0>0 and di0<m -1:
+                                di[i,j] = di[i,j] + (R[di0-1,dj0]-R[di0+1,dj0])/\
+                                    (2*R[di0-1,dj0]-4*R[di0,dj0]+2*R[di0+1,dj0]);
+                        
+                            if dj0>1 and dj0<n:
+                                dj[i,j] = dj[i,j] + (R[di0,dj0-1]-R[di0,dj0+1])/\
+                                    (2*R[di0,dj0-1]-4*R[di0,dj0]+2*R[di0,dj0+1]);
 
 
         #-- Weighted robust smoothing

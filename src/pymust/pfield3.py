@@ -410,6 +410,9 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
 
     assert np.isscalar(options.FrequencyStep) and utils.isnumeric(options.FrequencyStep) and options.FrequencyStep>0, 'OPTIONS.FrequencyStep must be a positive scalar.'
 
+    backend = options.get('Backend', 'numpy')
+    assert backend in ('numpy', 'jax'), 'OPTIONS.Backend must be "numpy" or "jax".'
+
     #%------------------------------------%
     #% END of Check the OPTIONS structure %
     #%------------------------------------%
@@ -622,71 +625,85 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
 
     # TODO GB: process several frequencies at the same time might remove some overhead of numpy calls
 
-    for k in range(nSampling):
+    if backend == 'jax':
+        from . import jax_backend
+        tx_weights, rx_weights = jax_backend.compute_frequency_weights(
+            f, delaysTX, APOD, pulseSPECT, probeSPECT, param.RXdelay if isSIMUS3 else None)
+        directivity_args = (SegWidth/2*cosP*sinT, SegHeight/2*sinP*sinT) if isFFD else ()
+        jax_mode = 'simus' if isSIMUS3 else 'pfield'
+        SPECT = np.asarray(jax_backend.sum_over_spectrum(
+            EXP, EXPdf, 2*np.pi*f/c, tx_weights, isOUT,
+            directivity_args = directivity_args,
+            rc = options.RC.flatten(order='F') if isSIMUS3 else None,
+            rx_weights = rx_weights, mode = jax_mode))
+        if jax_mode == 'pfield':
+            RP = np.sum(np.abs(SPECT)**2, 0).reshape((-1, 1))
+    else:
+        for k in range(nSampling):
 
-        kw = 2*np.pi*f[k]/c # wavenumber
+            kw = 2*np.pi*f[k]/c # wavenumber
 
-        #-- Exponential array of size [numel(x) NumberOfElements MxN]
-        # For all k, we need: EXP = exp((-kwa+1i*kw)*r)
-        #                         with kw = 2*pi*f(k)/c;
-        #                     and with kwa = alpha_dB/8.7*f(k)/1e6*1e2;
-        # Since f(k) = f(1)+(k-1)df, we use the following recursive product:
+            #-- Exponential array of size [numel(x) NumberOfElements MxN]
+            # For all k, we need: EXP = exp((-kwa+1i*kw)*r)
+            #                         with kw = 2*pi*f(k)/c;
+            #                     and with kwa = alpha_dB/8.7*f(k)/1e6*1e2;
+            # Since f(k) = f(1)+(k-1)df, we use the following recursive product:
 
-        if k>0:
-            EXP = EXP*EXPdf
+            if k>0:
+                EXP = EXP*EXPdf
 
-        #-- Directivity (if frequency-dependent)
-        if isFFD: # isFFD = true -> frequency-dependent directivity
-            DIRx = mysinc(kw*SegWidth/2*cosP*sinT) # x-directivity
-            DIRy = mysinc(kw*SegHeight/2*sinP*sinT) # y-directivity
-            DIR = DIRx*DIRy
+            #-- Directivity (if frequency-dependent)
+            if isFFD: # isFFD = true -> frequency-dependent directivity
+                DIRx = mysinc(kw*SegWidth/2*cosP*sinT) # x-directivity
+                DIRy = mysinc(kw*SegHeight/2*sinP*sinT) # y-directivity
+                DIR = DIRx*DIRy
 
-        #-- Radiation patterns of the single elements
-        # They are the combination of the far-field patterns of the M*N small
-        # segments that make up the single elements
-        #--
-        if isFFD: # isFFD = true -> frequency-dependent directivity
-            #TODO: CHECK THIS IS CORRECT
-            RPmono =  average_over_last_axis(DIR*EXP) # summation over the M*N small segments
-        else: # isFFD = false: the directivity depends on center frequency only
-            # note: the directivity (DIR) has already been included in EXP
-            if M*N>1:
-                RPmono = average_over_last_axis(EXP) # summation over the M*N small segments
-            else:
-                RPmono = EXP
+            #-- Radiation patterns of the single elements
+            # They are the combination of the far-field patterns of the M*N small
+            # segments that make up the single elements
+            #--
+            if isFFD: # isFFD = true -> frequency-dependent directivity
+                #TODO: CHECK THIS IS CORRECT
+                RPmono =  average_over_last_axis(DIR*EXP) # summation over the M*N small segments
+            else: # isFFD = false: the directivity depends on center frequency only
+                # note: the directivity (DIR) has already been included in EXP
+                if M*N>1:
+                    RPmono = average_over_last_axis(EXP) # summation over the M*N small segments
+                else:
+                    RPmono = EXP
 
-        if len(RPmono.shape) == 3 and RPmono.shape[2] == 1:
-            RPmono = RPmono.reshape((RPmono.shape[0],RPmono.shape[1]), order='F')
+            if len(RPmono.shape) == 3 and RPmono.shape[2] == 1:
+                RPmono = RPmono.reshape((RPmono.shape[0],RPmono.shape[1]), order='F')
 
 
-        #-- Transmit delays + Transmit apodization
-        # use of SUM: summation over the number of delay series (e.g. MLT)
-        #GB WARNING, HERE delays are a row vector instead of a column as in matlab
+            #-- Transmit delays + Transmit apodization
+            # use of SUM: summation over the number of delay series (e.g. MLT)
+            #GB WARNING, HERE delays are a row vector instead of a column as in matlab
 
-        DELAPOD = np.sum(np.exp(1j*kw*c*delaysTX), 0) *APOD
+            DELAPOD = np.sum(np.exp(1j*kw*c*delaysTX), 0) *APOD
 
-        #-- Summing the radiation patterns generating by all the elements
-        RPk = RPmono@DELAPOD.reshape((-1, 1), order='F')
+            #-- Summing the radiation patterns generating by all the elements
+            RPk = RPmono@DELAPOD.reshape((-1, 1), order='F')
 
-        #- include spectrum responses:
-        RPk = pulseSPECT[k]*RPk* probeSPECT[k]
+            #- include spectrum responses:
+            RPk = pulseSPECT[k]*RPk* probeSPECT[k]
 
-        RPk[isOUT] = 0 #<- if not jax
+            RPk[isOUT] = 0 #<- if not jax
 
-        #-- Output
-        if isSIMUS3: # Receive: for SIMUS3 only (spectra of the RF signals)
-            SPECT[k,:] = probeSPECT[k]  # the array bandwidth is considered
+            #-- Output
+            if isSIMUS3: # Receive: for SIMUS3 only (spectra of the RF signals)
+                SPECT[k,:] = probeSPECT[k]  # the array bandwidth is considered
 
-            SPECT[k,:] *= ((RPk.flatten(order='F')*options.RC.flatten(order='F')).reshape((1, -1), order='F') @ RPmono).flatten(order='F')  # pressure received by the elements)
-            # SPECT[k, :] *= np.dot(RPk.flatten()*options.RC.flatten(), RPmono ) # Trying to see if it is faster, no evidence whatsoever
-            # *f(k)^2/fc^2; Rayleigh scattering (OPTIONAL)
+                SPECT[k,:] *= ((RPk.flatten(order='F')*options.RC.flatten(order='F')).reshape((1, -1), order='F') @ RPmono).flatten(order='F')  # pressure received by the elements)
+                # SPECT[k, :] *= np.dot(RPk.flatten()*options.RC.flatten(), RPmono ) # Trying to see if it is faster, no evidence whatsoever
+                # *f(k)^2/fc^2; Rayleigh scattering (OPTIONAL)
 
-            if np.any(param.RXdelay != 0): # reception delays, if any
-                SPECT[k,:] = SPECT[k,:] *np.exp(1j*kw*c*param.RXdelay)
-        else:  # using PFIELD3 alone
-            RP = RP + abs(RPk)**2 # acoustic intensity
+                if np.any(param.RXdelay != 0): # reception delays, if any
+                    SPECT[k,:] = SPECT[k,:] *np.exp(1j*kw*c*param.RXdelay)
+            else:  # using PFIELD3 alone
+                RP = RP + abs(RPk)**2 # acoustic intensity
 
-            SPECT[k,:] = RPk.flatten(order='F')
+                SPECT[k,:] = RPk.flatten(order='F')
 
 
     #%------------------------------------%

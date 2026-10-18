@@ -5,7 +5,7 @@ import scipy, scipy.interpolate
 from . import  utils
 
 
-def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin) -> scipy.sparse.spmatrix:
+def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: utils.BackendName = "numpy") -> scipy.sparse.spmatrix:
     """
     %DASMTX   Delay-and-sum matrix
     %   M = DASMTX(SIG,X,Z,DELAYS,PARAM) returns the numel(X)-by-numel(SIG)
@@ -440,8 +440,9 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin) -> scipy.sp
 
 
     t0 = param.t0
-    x = x.reshape((-1,1), order = 'F')
-    z = z.reshape((-1,1), order = 'F')
+    xp = utils.get_array_module(backend)
+    x = xp.asarray(x.reshape((-1,1), order = 'F'))
+    z = xp.asarray(z.reshape((-1,1), order = 'F'))
 
     #%----
     #% Migration - diffraction summation (Delay & Sum, DAS)
@@ -452,13 +453,13 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin) -> scipy.sp
     #% dTX(k) = min(delaysTXi*c + sqrt((xTi-x(k)).^2 + (zTi-z(k)).^2));
     #% In a compact matrix form, this yields:
     if param.passive:
-        dTX = np.zeros_like(x)
+        dTX = xp.zeros_like(x)
     elif not useVirtualSource:
         # OLD version of computing the transmission delays
         #% For a given location [x(k),z(k)], one has:
         #% dTX(k) = min(delaysTXi*c + sqrt((xTi-x(k)).^2 + (zTi-z(k)).^2));
         #% In a compact matrix form, this yields:
-        dTX = np.min(delaysTXi*c + np.sqrt((xTi-x)**2 + (zTi-z)**2), 1).reshape((-1,1))
+        dTX = xp.min(delaysTXi*c + xp.sqrt((xTi-x)**2 + (zTi-z)**2), 1).reshape((-1,1))
 
     else:
         WasTransmitting = np.logical_not(np.isnan(delaysTX))
@@ -510,14 +511,15 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin) -> scipy.sp
     #% In a compact matrix form, this yields:
     dxT = x-xe
     dzT = z-ze
-    dRX = np.sqrt(dxT**2 + dzT**2)
+    dRX = xp.sqrt(dxT**2 + dzT**2)
 
     #%-- Travel times
     tau = (dTX+dRX)/c
 
     #%-- Corresponding fast-time indices
-    idxt = (tau-t0.reshape((1, -1)))*fs
-    idxt = idxt.astype(np.float64) #% in case tau is in single precision
+    # float64 on the host: sparse column indices reach nl*nc, beyond float32 resolution
+    idxt = np.asarray((tau-t0.reshape((1, -1)))*fs, dtype = np.float64)
+    tau = np.asarray(tau)
 
     #%-- In-range indices:
     method = method.lower()  
@@ -541,12 +543,12 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin) -> scipy.sp
         if not isRXangle:
             if np.isfinite(RadiusOfCurvature):
                 #% -- for a convex array
-                Iaperture = np.abs(np.arcsin(dxT/dRX)-THe)<=np.arctan(1/2/fNum)
+                Iaperture = xp.abs(xp.arcsin(dxT/dRX)-THe)<=np.arctan(1/2/fNum)
             else:
                 #% -- for a linear array
                 #% For a given location [x(k),z(k)], one has:
                 #% Iaperture = abs(xT-x(k)) <= z(k)/2/fNum;
-                Iaperture = np.abs(dxT)<=(z/2/fNum)
+                Iaperture = xp.abs(dxT)<=(z/2/fNum)
                 #% Iaperture = mean(abs(dxT),1)<=(z/2/fNum);
 
 
@@ -554,9 +556,9 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin) -> scipy.sp
             #% -- ONLY for a rectilinear array
             #% For a given location [x(k),z(k)], one has:
             #% Iaperture = abs(xT-x(k)-z(k)*tanRX(k)) <= z(k)/cosRX(k)/2/fNum;
-            Iaperture = np.abs(dxT-z.tanRX.flatten())<=(z/cosRX.flatten()/2/fNum)
+            Iaperture = xp.abs(dxT-z*tanRX.reshape((-1,1), order = 'F'))<=(z/cosRX.reshape((-1,1), order = 'F')/2/fNum)
 
-        I = np.logical_and(I,Iaperture)
+        I = np.logical_and(I,np.asarray(Iaperture))
 
     #I = np.asfortranarray(I)
     #% subscripts to linear indices (instead of using SUB2IND)

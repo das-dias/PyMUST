@@ -2,6 +2,9 @@ import numpy as np, scipy, scipy.interpolate, multiprocessing, multiprocessing.p
 from abc import ABC
 import inspect, matplotlib, pickle, os, matplotlib.pyplot as plt, copy
 from collections import deque
+from typing import Literal
+
+BackendName = Literal["numpy", "jax"]
 
 
 class dotdict(dict, ABC):
@@ -41,7 +44,7 @@ class Options(dotdict):
     def names(self):
         names = {'dBThresh','ElementSplitting',
                 'FullFrequencyDirectivity','FrequencyStep','ParPool',
-                'WaitBar'}
+                'WaitBar', 'Backend'}
         return {n.lower(): n for n in names}
     
     def setParPool(self, workers, mode = 'process'):
@@ -268,5 +271,19 @@ def getDopplerColorMap():
     dopplerCM = matplotlib.cm.ScalarMappable(norm=matplotlib.colors.Normalize(),cmap=new_cmap)
     return dopplerCM
 
-def applyDasMTX(M, IQ, imageShape):
-    return (M @ IQ.flatten(order = 'F')).reshape(imageShape, order = 'F')
+def get_array_module(backend: BackendName = "numpy"):
+    if backend == "numpy":
+        return np
+    if backend == "jax":
+        import jax.numpy as jnp
+        return jnp
+    raise ValueError(f'Unknown backend "{backend}": use "numpy" or "jax".')
+
+def applyDasMTX(M, IQ, imageShape, backend: BackendName = "numpy"):
+    signal = IQ.flatten(order = 'F')
+    if get_array_module(backend) is np:
+        beamformed = M @ signal
+    else:
+        from . import jax_backend
+        beamformed = jax_backend.apply_das_matrix(M, signal)
+    return beamformed.reshape(imageShape, order = 'F')
