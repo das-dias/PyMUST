@@ -27,6 +27,7 @@ dynamic = ["license", "version"]
 [project.optional-dependencies]
 jax = ["jax"]
 plot = ["plotly", "nbformat"]
+notebook = ["nbclient", "ipykernel"]
 test = ["pytest", "plotly", "jax; python_version >= '3.11'"]
 
 [project.urls]

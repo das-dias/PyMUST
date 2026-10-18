@@ -893,7 +893,7 @@ def pfield(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, pa
     if not (isSIMUS or isMKMOVIE):
         RP =np.sqrt(RP).reshape(siz0, order = 'F')
         SPECT = np.swapaxes(SPECT, 0, 1)
-        SPECT = SPECT.reshape([siz0[0], siz0[1], nSampling], order = 'F')
+        SPECT = SPECT.reshape((*siz0, nSampling), order = 'F')
     return RP, SPECT, IDX
 
 

@@ -726,6 +726,6 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
     if not isSIMUS3:
         RP =np.sqrt(RP).reshape(siz0, order='F')
         SPECT = np.moveaxis(SPECT, 0, -1)
-        SPECT = SPECT.reshape([siz0[0], siz0[1], siz0[2], nSampling], order='F')
+        SPECT = SPECT.reshape((*siz0, nSampling), order = 'F')
 
     return RP, SPECT, IDX

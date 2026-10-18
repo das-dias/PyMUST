@@ -127,3 +127,23 @@ def test_dasmtx3_single_transmitting_element_uses_y():
     far_delays[0, transmitting_element] = 0
     param.useVirtualSource = False
     np.testing.assert_allclose(virtual_source, compute_das_matrix_3d(param, far_delays))
+
+
+def test_pfield_and_pfield3_accept_2d_and_3d_point_grids():
+    param = get_matrix_param()
+    delays = np.zeros((1, param.elements.shape[1]))
+    for grid_shape in [(4, 3), (4, 3, 2)]:
+        x, y, z = (np.random.default_rng(0).uniform(-2e-3, 2e-3, grid_shape) for _ in range(3))
+        z = np.abs(z) + 5e-3
+        pressure, spectrum, _ = pymust.pfield3(x, y, z, delays, param.copy())
+        assert pressure.shape == grid_shape
+        assert spectrum.shape[:-1] == grid_shape
+
+    linear_param = pymust.getparam("L11-5v")
+    linear_param.Nelements = 8
+    for grid_shape in [(4, 3), (4, 3, 2)]:
+        x = np.random.default_rng(1).uniform(-2e-3, 2e-3, grid_shape)
+        z = np.random.default_rng(2).uniform(5e-3, 1e-2, grid_shape)
+        pressure, spectrum, _ = pymust.pfield(x, None, z, np.zeros((1, 8)), linear_param.copy())
+        assert pressure.shape == grid_shape
+        assert spectrum.shape[:-1] == grid_shape
