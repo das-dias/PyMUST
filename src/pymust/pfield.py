@@ -431,6 +431,9 @@ def pfield(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, pa
 
     assert np.isscalar(options.FrequencyStep) and utils.isnumeric(options.FrequencyStep) and options.FrequencyStep>0, 'OPTIONS.FrequencyStep must be a positive scalar.'
 
+    backend = options.get('Backend', 'numpy')
+    assert backend in ('numpy', 'jax'), 'OPTIONS.Backend must be "numpy" or "jax".'
+
     # DR: Possibly add explanation of casting RC to single precision
     if options.RC is not None and len(options.RC):
         options.RC = options.RC.astype(np.float32)
@@ -724,120 +727,142 @@ def pfield(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, pa
     EXP = EXP.astype(np.complex64)
     # TODO GB: process several frequencies at the same time might remove some overhead of numpy calls
 
-    for k  in range(nSampling):
+    if backend == 'jax':
+        from . import jax_backend
+        has_scatterers = isMKMOVIE and not utils.isEmpty(options.RC)
+        tx_weights, rx_weights = jax_backend.compute_frequency_weights(
+            f, delaysTX, APOD, pulseSPECT, probeSPECT, param.RXdelay if isSIMUS else None)
+        mgbm_args = mgbm_update = None
+        if ElevationFocusing:
+            mgbm_args = (alpha, gamma, beta2, np.asarray(A), np.asarray(B)/ElementHeight**2)
+            mgbm_update = np.isin(np.arange(1, nSampling + 1), k4mgbm)
+        jax_mode = 'mkmovie' if isMKMOVIE else 'simus' if isSIMUS else 'pfield'
+        SPECT = np.asarray(jax_backend.sum_over_spectrum(
+            EXP, EXPdf, 2*np.pi*f/c, tx_weights, isOUT,
+            directivity_args = (SegLength/2*sinT,) if isFFD else (),
+            mgbm_args = mgbm_args, mgbm_update = mgbm_update,
+            rc = options.RC.flatten() if isSIMUS or has_scatterers else None,
+            rx_weights = rx_weights,
+            exp_rc = EXP_RC if has_scatterers else None,
+            exp_step_rc = EXPdf_RC if has_scatterers else None,
+            mode = jax_mode, num_points = int(nx)))
+        if jax_mode == 'pfield':
+            RP = np.sum(np.abs(SPECT)**2, 0).reshape((-1, 1))
+    else:
+        for k  in range(nSampling):
 
-        kw = 2*np.pi*f[k]/c #; % wavenumber
+            kw = 2*np.pi*f[k]/c #; % wavenumber
         
-        #%--- MGBM = multi-Gaussian beam model
-        #% The MGBM is used to simulate the focused beams in the elevation
-        #% direction. These lines are run if ElevationFocusing is true.
-        if ElevationFocusing and (k + 1) in k4mgbm:
-            #% (the MGBM field is not recalculated at each step)
-            MGBM = 0
-            if all(np.abs(y)<utils.eps('single')):
-                for n,_ in enumerate(A):
-                    MGBM = MGBM + A[n]*np.sqrt(np.pi/(kw*alpha + B[n]/ElementHeight**2))
+            #%--- MGBM = multi-Gaussian beam model
+            #% The MGBM is used to simulate the focused beams in the elevation
+            #% direction. These lines are run if ElevationFocusing is true.
+            if ElevationFocusing and (k + 1) in k4mgbm:
+                #% (the MGBM field is not recalculated at each step)
+                MGBM = 0
+                if all(np.abs(y)<utils.eps('single')):
+                    for n,_ in enumerate(A):
+                        MGBM = MGBM + A[n]*np.sqrt(np.pi/(kw*alpha + B[n]/ElementHeight**2))
 
-            else:
-                for n,_ in enumerate(A):
-                    tmp = 1/(kw*alpha + B[n]/ElementHeight**2)
-                    MGBM = MGBM + A[n]*np.sqrt(np.pi*tmp)* np.exp(kw**2*beta2/4*tmp + kw*gamma)
+                else:
+                    for n,_ in enumerate(A):
+                        tmp = 1/(kw*alpha + B[n]/ElementHeight**2)
+                        MGBM = MGBM + A[n]*np.sqrt(np.pi*tmp)* np.exp(kw**2*beta2/4*tmp + kw*gamma)
                 
             
         
-        #%-- Exponential array of size [numel(x) NumberOfElements M]
-        #% For all k, we need: EXP = exp((-kwa+1i*kw)*r)
-        #%                         with kw = 2*pi*f(k)/c;
-        #%                     and with kwa = alpha_dB/8.7*f(k)/1e6*1e2;
-        #% Since f(k) = f(1)+(k-1)df, we use the following recursive product:
-        if k>0:
-            EXP = EXP*EXPdf
-            #% If PFIELD is called by MKMOVIE and if scatterers are present:
-            if isMKMOVIE and not utils.isEmpty(options.RC):
-                EXP_RC = EXP_RC*EXPdf_RC
+            #%-- Exponential array of size [numel(x) NumberOfElements M]
+            #% For all k, we need: EXP = exp((-kwa+1i*kw)*r)
+            #%                         with kw = 2*pi*f(k)/c;
+            #%                     and with kwa = alpha_dB/8.7*f(k)/1e6*1e2;
+            #% Since f(k) = f(1)+(k-1)df, we use the following recursive product:
+            if k>0:
+                EXP = EXP*EXPdf
+                #% If PFIELD is called by MKMOVIE and if scatterers are present:
+                if isMKMOVIE and not utils.isEmpty(options.RC):
+                    EXP_RC = EXP_RC*EXPdf_RC
 
 
             
-        #%-- Directivity (if frequency-dependent)
-        if isFFD: #% isFFD = true -> frequency-dependent directivity
-            DIR = kw*SegLength/2*sinT
-            DIR = mysinc(DIR)
+            #%-- Directivity (if frequency-dependent)
+            if isFFD: #% isFFD = true -> frequency-dependent directivity
+                DIR = kw*SegLength/2*sinT
+                DIR = mysinc(DIR)
 
             
-        #%-- Radiation patterns of the single elements
-        #% They are the combination of the far-field patterns of the M small
-        #% segments that make up the single elements
-        #%--
-        if isFFD: #% isFFD = true -> frequency-dependent directivity
-            #TODO: CHECK THIS IS CORRECT
-            RPmono=  average_over_last_axis(DIR*EXP) #; % summation over the M small segments
-        else: # % isFFD = false: the directivity depends on center frequency only
-            #% note: the directivity (DIR) has already been included in EXP
-            if M>1:            
-                RPmono = average_over_last_axis(EXP); #% summation over the M small segments
-            else:
-                RPmono = EXP
+            #%-- Radiation patterns of the single elements
+            #% They are the combination of the far-field patterns of the M small
+            #% segments that make up the single elements
+            #%--
+            if isFFD: #% isFFD = true -> frequency-dependent directivity
+                #TODO: CHECK THIS IS CORRECT
+                RPmono=  average_over_last_axis(DIR*EXP) #; % summation over the M small segments
+            else: # % isFFD = false: the directivity depends on center frequency only
+                #% note: the directivity (DIR) has already been included in EXP
+                if M>1:            
+                    RPmono = average_over_last_axis(EXP); #% summation over the M small segments
+                else:
+                    RPmono = EXP
 
-        if len(RPmono.shape) == 3 and RPmono.shape[2] == 1:
-            RPmono = RPmono.reshape((RPmono.shape[0],RPmono.shape[1]))
+            if len(RPmono.shape) == 3 and RPmono.shape[2] == 1:
+                RPmono = RPmono.reshape((RPmono.shape[0],RPmono.shape[1]))
         
         
-        #%-- Complete the radiation patterns of the single elements by including
-        #%   the elevation focusing, if required
-        if ElevationFocusing:
-            RPmono = RPmono*MGBM
+            #%-- Complete the radiation patterns of the single elements by including
+            #%   the elevation focusing, if required
+            if ElevationFocusing:
+                RPmono = RPmono*MGBM
 
             
-        #%-- Transmit delays + Transmit apodization
-        #% use of SUM: summation over the number of delay series (e.g. MLT)
-        #GB WARNING,  HERE delays are a row vector instead of a column as in matlab
+            #%-- Transmit delays + Transmit apodization
+            #% use of SUM: summation over the number of delay series (e.g. MLT)
+            #GB WARNING,  HERE delays are a row vector instead of a column as in matlab
 
-        DELAPOD = np.sum(np.exp(1j*kw*c*delaysTX), 0) *APOD
+            DELAPOD = np.sum(np.exp(1j*kw*c*delaysTX), 0) *APOD
         
-        #%-- Summing the radiation patterns generating by all the elements
-        RPk = RPmono@DELAPOD.reshape((-1, 1))
-        #RPk = np.einsum('ij,j->i', RPmono, DELAPOD)
-        #RPk = RPk.reshape((-1,1))
+            #%-- Summing the radiation patterns generating by all the elements
+            RPk = RPmono@DELAPOD.reshape((-1, 1))
+            #RPk = np.einsum('ij,j->i', RPmono, DELAPOD)
+            #RPk = RPk.reshape((-1,1))
 
-        #%- include spectrum responses:
-        RPk = pulseSPECT[k]*RPk* probeSPECT[k]
+            #%- include spectrum responses:
+            RPk = pulseSPECT[k]*RPk* probeSPECT[k]
 
-        RPk[isOUT] = 0 #<- if not jax
+            RPk[isOUT] = 0 #<- if not jax
         
-       #%-- Output
-        if isMKMOVIE: # % for MKMOVIE only (spectrum of the pressure field)
-            SPECT[k,:] = RPk[:nx, 0]
-            if not utils.isEmpty(options.RC):
-                SPECT[k,:] += EXP_RC @ (RPk[nx:].flatten()*options.RC) 
-#                print(np.linalg.norm(EXP_RC), np.linalg.norm(RPk[nx:]), np.linalg.norm(options.RC))
+           #%-- Output
+            if isMKMOVIE: # % for MKMOVIE only (spectrum of the pressure field)
+                SPECT[k,:] = RPk[:nx, 0]
+                if not utils.isEmpty(options.RC):
+                    SPECT[k,:] += EXP_RC @ (RPk[nx:].flatten()*options.RC) 
+    #                print(np.linalg.norm(EXP_RC), np.linalg.norm(RPk[nx:]), np.linalg.norm(options.RC))
 
-        elif isSIMUS: #% Receive: for SIMUS only (spectra of the RF signals)
-            SPECT[k,:] = probeSPECT[k]  #... % the array bandwidth is considered
+            elif isSIMUS: #% Receive: for SIMUS only (spectra of the RF signals)
+                SPECT[k,:] = probeSPECT[k]  #... % the array bandwidth is considered
 
-            SPECT[k,:] *= ((RPk.flatten()*options.RC.flatten()).reshape((1, -1)) @ RPmono).flatten()  #... % pressure received by the elements)
-            #SPECT[k, :] *= np.dot(RPk.flatten()*options.RC.flatten(), RPmono ) # Trying to see if it is faster, no evidence whatsoever
-                #; % *f(k)^2/fc^2; % Rayleigh scattering (OPTIONAL)
+                SPECT[k,:] *= ((RPk.flatten()*options.RC.flatten()).reshape((1, -1)) @ RPmono).flatten()  #... % pressure received by the elements)
+                #SPECT[k, :] *= np.dot(RPk.flatten()*options.RC.flatten(), RPmono ) # Trying to see if it is faster, no evidence whatsoever
+                    #; % *f(k)^2/fc^2; % Rayleigh scattering (OPTIONAL)
 
 
-            if np.any(param.RXdelay != 0): # % reception delays, if any
-                SPECT[k,:] = SPECT[k,:] *np.exp(1j*kw*c*param.RXdelay)
-        else:  #% using PFIELD alone
-            RP = RP + abs(RPk)**2; #% acoustic intensity
+                if np.any(param.RXdelay != 0): # % reception delays, if any
+                    SPECT[k,:] = SPECT[k,:] *np.exp(1j*kw*c*param.RXdelay)
+            else:  #% using PFIELD alone
+                RP = RP + abs(RPk)**2; #% acoustic intensity
 
-            SPECT[k,:] = RPk.flatten(order = 'F')
+                SPECT[k,:] = RPk.flatten(order = 'F')
         
         
-        # USE TQDM INSTEAD
-        #%- update the wait bar
-        #if options.WaitBar && rem(k,10)==0
-        #    tstep = toc(tstart);
-        #    trem = tstep*(nSampling/k-1);
-        #    waitbar(k/nSampling,hwb,...
-        #        {['Elapsed: ',int2str(floor(tstep/60)) ,' min ',...
-        #        int2str(floor(rem(tstep,60))),' s'],...
-        #        ['Remaining: ',int2str(floor(trem/60)) ,' min ',...
-        #        int2str(floor(rem(trem,60))),' s']})
-        #end
+            # USE TQDM INSTEAD
+            #%- update the wait bar
+            #if options.WaitBar && rem(k,10)==0
+            #    tstep = toc(tstart);
+            #    trem = tstep*(nSampling/k-1);
+            #    waitbar(k/nSampling,hwb,...
+            #        {['Elapsed: ',int2str(floor(tstep/60)) ,' min ',...
+            #        int2str(floor(rem(tstep,60))),' s'],...
+            #        ['Remaining: ',int2str(floor(trem/60)) ,' min ',...
+            #        int2str(floor(rem(trem,60))),' s']})
+            #end
         
 
    # %------------------------------------%
