@@ -246,8 +246,8 @@ def mkmovie(*varargin):
     pfield(None, None, None, delaysTX,param,opt)
 
     #%-- Movie properties
-    NumberOfElements = param.Nelements; # number of array elements
-    L = param.pitch*(NumberOfElements-1)
+    xe, _, _, _ = param.getElementPositions()
+    L = np.max(xe)-np.min(xe) # array width
     if not 'movie' in param:
         # NOTE: width and height are in cm
         param.movie = np.array([200*L, 200*L, 50, 15, 10]) # default

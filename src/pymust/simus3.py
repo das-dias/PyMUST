@@ -261,7 +261,9 @@ def simus3(*varargin):
 
     assert param.fs>=4*param.fc,'PARAM.fs must be >= 4*PARAM.fc.'
 
-    NumberOfElements = param.elements.shape[1] # number of array elements
+    #-- Centers of the transducer elements (x-, y- and z-coordinates)
+    xe, ye, ze = param.get_element_coordinates()
+    NumberOfElements = xe.size # number of array elements
 
     #-- Receive delays (in s)
     if not utils.isfield(param,'RXdelay'):
@@ -298,13 +300,8 @@ def simus3(*varargin):
     #% end of CHECK THE INPUT SYNTAX %
     #%-------------------------------%
 
-    #GB NOTE: same as in pfield, put in param ?
-    #-- Centers of the tranducer elements (x- and z-coordinates)
-    xe = param.elements[0,:]
-    ye = param.elements[1,:]
-
     #-- Maximum distance
-    d2 = (x.reshape((-1,1),order='F')-xe)**2+(y.reshape((-1,1),order='F')-ye)**2 + z.reshape((-1,1),order='F')**2
+    d2 = (x.reshape((-1,1),order='F')-xe)**2+(y.reshape((-1,1),order='F')-ye)**2 + (z.reshape((-1,1),order='F')-ze)**2
     maxD = np.sqrt(np.max(d2)) # maximum element-scatterer distance
     _, tp = getpulse.getpulse(param, 2)
     maxD = maxD + tp[-1] * param.c # add pulse length

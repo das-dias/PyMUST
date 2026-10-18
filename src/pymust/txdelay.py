@@ -142,16 +142,6 @@ def txdelay(*args):
 
     assert isinstance(param, utils.Param),'Wrong input arguments. PARAM must be a structure.'
 
-    #%-- Number of elements
-    if utils.isfield(param,'Nelements'):
-        N = param.Nelements
-    else:
-        raise ValueError('The number of elements (PARAM.Nelements) is required.')
-
-    #%-- Pitch (in m)
-    if not utils.isfield(param,'pitch'):
-        raise ValueError('A pitch value (PARAM.pitch) is required.')
-
     #%-- Longitudinal velocity (in m/s)
     if not utils.isfield(param,'c'):
         param.c = 1540
@@ -170,13 +160,19 @@ def txdelay(*args):
 
 
     #%-- Positions of the transducer elements
+    #% (from PARAM.elements if given, else from PARAM.pitch, PARAM.Nelements and PARAM.radius)
     x, z, THe, h= param.getElementPositions()
+    # Centre of the array's bounding box (the origin for the uniform arrays)
+    x_center = (np.min(x)+np.max(x))/2
+    z_center = (np.min(z)+np.max(z))/2
 
     if option == 'Plane Wave':
         tilt = np.array(args[1]).reshape((-1, 1)) # Check if it is not a vector
         assert np.all(np.abs(tilt)<np.pi/2), 'The tilt angles must verify |tilt| < pi/2'
         if isLINEAR:
-            delays = x*np.sin(tilt)/c
+            # VERIFICATION PENDING: the z*cos(tilt) term for arrays with element
+            # depths still has to be checked against a simulated wavefront (PFIELD)
+            delays = (x*np.sin(tilt) + z*np.cos(tilt))/c
         else:
             #% we have a CONVEX ARRAY
             
@@ -199,7 +195,7 @@ def txdelay(*args):
         assert x0.shape == z0.shape, 'X0 and Z0 must have the same length.'
         delays = np.sqrt((x-x0)**2 + (z-z0)**2)/c
         if isLINEAR:
-            delays = -delays*np.sign(z0)
+            delays = -delays*np.sign(z0-z_center)
         elif np.sqrt(x0**2 + (R-z0)**2)<R:
             delays = -delays
     #%-----
@@ -209,11 +205,12 @@ def txdelay(*args):
         width = np.array(args[2]).reshape((-1, 1))
         assert tilt.shape == width.shape, 'TILT and WIDTH must have the same length.'
         assert np.all(np.logical_and(width>0, width<np.pi)), 'The width angles must verify width > 0 and width < pi'
-        L = (N-1)*param.pitch
-        #%-- Origo
+        L = np.max(x)-np.min(x) # array width
+        #%-- Origo (angles2origo returns it relative to the array centre)
+        # VERIFICATION PENDING for arrays that are not centred on the origin
         x0,z0 = angles2origo(L,tilt,width)
         #%--
-        delays = np.sqrt((x-x0)**2 + z0**2)/c
+        delays = np.sqrt((x-x_center-x0)**2 + (z-z_center-z0)**2)/c
         delays = -delays*np.sign(z0)
     delays = delays-np.min(delays,-1).reshape((-1, 1))
 

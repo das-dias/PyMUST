@@ -171,14 +171,17 @@ def txdelay3(*args):
 
     assert isinstance(param, utils.Param),'Wrong input arguments. PARAM must be a structure.'
 
-    #-- Coordinates of the transducer elements (xe,ye)
-    assert utils.isfield(param,'elements'), 'PARAM.elements must contain the x- and y-locations of the transducer elements.'
-    assert param.elements.shape[0]==2, 'PARAM.elements must have two rows that contain the x (1st row) and y (2nd row) coordinates of the transducer elements.'
-    xe = param.elements[0,:]
-    ye = param.elements[1,:]
-    
+    #-- Coordinates of the transducer elements (xe,ye,ze)
+    # PARAM.elements: (x, y) rows with ze = 0, or (x, y, z) rows; without it, the
+    # uniform linear array given by PARAM.pitch and PARAM.Nelements
+    xe, ye, ze = param.get_element_coordinates()
     xe = xe.reshape((1, -1), order="F")
     ye = ye.reshape((1, -1), order="F")
+    ze = ze.reshape((1, -1), order="F")
+    # Centre of the array's bounding box (the origin for a centred planar array)
+    x_center = (np.min(xe)+np.max(xe))/2
+    y_center = (np.min(ye)+np.max(ye))/2
+    z_center = (np.min(ze)+np.max(ze))/2
     
     #-- Longitudinal velocity (in m/s)
     if not utils.isfield(param,'c'):
@@ -186,17 +189,25 @@ def txdelay3(*args):
 
     c = param.c
 
-
-    #-- Positions of the transducer elements
-    x, z, THe, h= param.getElementPositions()
-
     if option == 'Plane Wave':
         # DR : problems checking if it is not a vector, used as a number later, no need for casting into array
         tiltx = args[1] # tiltx = np.array(args[1]).reshape((-1, 1))
         tilty = args[2] # tilty = np.array(args[2]).reshape((-1, 1))
         assert np.isscalar(tiltx+tilty), 'TILTx and TILTy must be two scalars.'
         assert np.all(np.abs(np.array([tiltx,tilty]))<np.pi/2), 'The tilt angles must verify |TILTx| and |TILTy| < pi/2'
-        delays = (xe*np.sin(tilty)-ye*np.sin(tiltx))/c
+        # Plane wave propagating along the unit vector obtained by rotating [0,0,1]
+        # by TILTx about the x-axis, then by TILTy about the y-axis (the rotation of
+        # the "Diverging Wave" option). The delay of an element is its distance along
+        # this direction divided by c. The former (xe*sin(tilty)-ye*sin(tiltx))/c
+        # lacked the cos(tiltx) factor of the x-component and ignored ze.
+        kx = np.sin(tilty)*np.cos(tiltx)
+        ky = -np.sin(tiltx)
+        kz = np.cos(tilty)*np.cos(tiltx)
+        # VERIFICATION PENDING: the rotation convention (TILTx about x first, then
+        # TILTy about y) and the resulting delay profiles still have to be checked
+        # against MATLAB MUST and against the steering direction of the PFIELD3 main
+        # lobe, in particular when both tilts are non-zero and for non-planar arrays.
+        delays = (kx*xe + ky*ye + kz*ze)/c
     #-----
     elif option == 'Diverging Wave':
         # DR : problems checking if it is not a vector, used as a number later, no need for casting into array
@@ -239,10 +250,12 @@ def txdelay3(*args):
         # r = scipy.optimize.minimize_scalar(myfun, bounds=(0, 2*np.pi), method='bounded', options={'xatol': 1e-6, 'fatol': 1e-6}) # DR : alternative (not tried)
 
         # position of the virtual source, and TX delays
+        # (relative to the array centre; VERIFICATION PENDING for arrays that are
+        # not centred on the origin)
         cos_el = np.cos(el)
-        x0 = r*cos_el*np.cos(az)
-        y0 = r*cos_el*np.sin(az)
-        z0 = r*np.sin(el)
+        x0 = x_center + r*cos_el*np.cos(az)
+        y0 = y_center + r*cos_el*np.sin(az)
+        z0 = z_center + r*np.sin(el)
         delays = txdelay3(x0,y0,z0,param)
 
     #-----
@@ -252,15 +265,15 @@ def txdelay3(*args):
         z0 = np.array(args[2]).reshape((-1, 1), order="F")
         assert len(x0)==len(y0)==len(z0), 'X0, Y0, and Z0 must have the same length.'
         if len(x0)==1: # focus point
-            d = np.sqrt((xe-x0)**2 + (ye-y0)**2 + z0**2)
+            d = np.sqrt((xe-x0)**2 + (ye-y0)**2 + (ze-z0)**2)
         elif len(x0)==2: # focus line
-            X = np.concatenate((xe, ye, np.zeros_like(xe)), axis=0)
+            X = np.concatenate((xe, ye, ze), axis=0)
             x1 = np.tile(np.concatenate((x0[0],y0[0],z0[0]), axis=0).reshape((-1,1), order="F"), (1, x0.shape[1]))
             x2 = np.tile(np.concatenate((x0[1],y0[1],z0[1]), axis=0).reshape((-1,1), order="F"), (1, x0.shape[1]))
             d = np.linalg.norm(np.cross(X-x1,X-x2, axis=0), axis=0)/np.linalg.norm(x2-x1)
         else:
             ValueError('X0, Y0, and Z0 must have 1 or 2 elements.')
-        delays = -d/c*np.sign(z0)
+        delays = -d/c*np.sign(z0-z_center)
 
     delays = delays-np.min(delays,-1).reshape((-1, 1))
 

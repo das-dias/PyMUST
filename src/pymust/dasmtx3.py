@@ -241,17 +241,9 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
 
 
     #-- Coordinates of the transducer elements (xe,ye,ze)
-    assert utils.isfield(param,'elements'), 'PARAM.elements must contain the x- and y-locations of the transducer elements.'
-    if param.elements.shape[1] in [2,3]: # param.elements is a two(or 3)-column matrix, convert it to a row matrix
-        param.elements = param.elements.T
-    assert param.elements.shape[0] in [2, 3], 'PARAM.elements must be a 2 (or 3)-row matrix that contains the x, y (and optionally z)-coordinates of the transducer elements.'
-    
-    xe = param.elements[0, :]
-    ye = param.elements[1, :]
-    if param.elements.shape[0] == 3:
-        ze = param.elements[2, :]
-    else:
-        ze = np.zeros_like(xe)
+    # PARAM.elements: (x, y) rows with ze = 0, or (x, y, z) rows; without it, the
+    # uniform linear array given by PARAM.pitch and PARAM.Nelements
+    xe, ye, ze = param.get_element_coordinates()
 
     #-- Number of elements
     if delaysTX.shape[0] == nc and delaysTX.shape[1] != nc:
@@ -357,7 +349,8 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
         #%-- TX distances
         if nTX==1:
             #% Only one element was active
-            dTX = np.hypot(xe[WasTransmitting]-x,ze[WasTransmitting]-z) + \
+            # 3-D distance to the active element: the former np.hypot(xe-x, ze-z) dropped the y term
+            dTX = np.sqrt((xe[WasTransmitting]-x)**2 + (ye[WasTransmitting]-y)**2 + (ze[WasTransmitting]-z)**2) + \
                 delaysTX[WasTransmitting]*c;
 
         elif nTX<3:
@@ -366,13 +359,26 @@ def dasmtx3(SIG: np.ndarray, x: np.ndarray, y: np.ndarray, z: np.ndarray, *varar
         else:
             #%-- We create a virtual transducer to calculate the TX distances.
             xv,yv,zv = vxdcr3(xe[WasTransmitting],ye[WasTransmitting], \
-                delaysTX[WasTransmitting],c);
+                delaysTX[WasTransmitting],c,ze[WasTransmitting]);
 
             [DzvDx,DzvDy] = trigrad(xv,yv,zv);
 
             # Distances between the (x,y,z) points and the lines normal to the
             # virtual transducer at (xv,yv,zv)
-            Dn = np.abs(DzvDx*(y-yv) + DzvDy*(z-zv) - (x-xv))/np.abs(1+DzvDx**2+DzvDy**2);
+            # The virtual transducer is the surface z = zv(x,y), whose unit normal at
+            # (xv,yv,zv) is n = (-DzvDx, -DzvDy, 1)/sqrt(1+DzvDx**2+DzvDy**2). The
+            # distance from a point P to the normal line through V is
+            # sqrt(|P-V|**2 - ((P-V).n)**2); only its argmin is needed, so the
+            # squared distance is used. This is the 3-D analogue of the 2-D Dn in
+            # dasmtx.py. The former expression,
+            #   abs(DzvDx*(y-yv) + DzvDy*(z-zv) - (x-xv))/abs(1+DzvDx**2+DzvDy**2),
+            # paired the x-slope with y (and the y-slope with z) and lacked the
+            # square root: with a known diverging wave it picked virtual points up
+            # to 1.8 mm off, against ~5 um with the geometric distance.
+            normal_norm = np.sqrt(1+DzvDx**2+DzvDy**2)
+            dx, dy, dz = x-xv, y-yv, z-zv
+            along_normal = (-DzvDx*dx - DzvDy*dy + dz)/normal_norm
+            Dn = dx**2 + dy**2 + dz**2 - along_normal**2 # squared distance
             #idx contains the element numbers that give the smallest Dn_s
             idx = np.argmin(Dn, 1)
 
@@ -506,7 +512,7 @@ class DasMTX3:
         return (self.M @ SIG.flatten(order = 'F')).reshape(self.shape, order = 'F')
     
 
-def  vxdcr3(xe,ye,delaysTX,c):
+def  vxdcr3(xe,ye,delaysTX,c,ze=None):
     """
     %VXDCR3   3-D virtual transducer (XDCR)
     %   [xV,zV,zV] = VXDCR3 returns the positions of the elements of the 3-D
@@ -515,16 +521,41 @@ def  vxdcr3(xe,ye,delaysTX,c):
     %   The virtual transducer is an "equivalent" transducer assuming null
     %   delays.
     %
+    %   ZE (optional, default 0) contains the z-positions of the elements,
+    %   which must form a height field over (XE,YE).
+    %
     %   -- Damien Garcia -- 2024/06, last update: 2024/06/26
     %                                [simplified version]
     """
     T2 = delaysTX.flatten(order = "F")**2
     xe = xe.flatten(order = 'F')
     ye = ye.flatten(order = 'F')
+    ze = np.zeros_like(xe) if ze is None else ze.flatten(order = 'F')
     dT2dx,dT2dy = trigrad(xe,ye,T2);
-    xV = xe-c**22*dT2dx/2;
-    yV = ye-c**2*dT2dy/2;
-    zV = -np.sqrt(np.abs(c**2*T2-(xe-xV)**2-(ye-yV)**2));
+    # Each element e has a virtual point V at distance c*T(e) along the ray:
+    #   c**2*T**2 = (xe-xV)**2 + (ye-yV)**2 + (ze-zV)**2.
+    # V is where this sphere touches the envelope of the spheres of all the
+    # elements: differentiating along the array surface ze(x,y), at fixed V, gives
+    #   a + h*gx = px and b + h*gy = py,
+    # with a = xe-xV, b = ye-yV, h = ze-zV >= 0, (gx,gy) = grad(ze) and
+    # (px,py) = c**2/2*grad(T**2). This is the equation the 2-D vxdcr of
+    # dasmtx.py solves with fsolve. Substituting a and b into the sphere equation
+    # gives a quadratic in h, whose nonnegative root is
+    #   h = (p.g + sqrt((p.g)**2 - (1+|g|**2)*(|p|**2 - c**2*T**2)))/(1+|g|**2).
+    # For a planar array (g = 0) this reduces to xV = xe-px, yV = ye-py and
+    # zV = -sqrt(c**2*T**2 - px**2 - py**2). (The former c**22 in the xV line
+    # was a typo: it put the virtual x-positions at ~1e60 m.)
+    # ponytail: grad(ze) from trigrad assumes the elements form a height field
+    # over (x,y); arrays that fold over need gradients along the surface itself.
+    dzdx,dzdy = trigrad(xe,ye,ze)
+    px = c**2*dT2dx/2
+    py = c**2*dT2dy/2
+    slope2 = 1+dzdx**2+dzdy**2
+    p_dot_g = px*dzdx+py*dzdy
+    h = (p_dot_g+np.sqrt(np.abs(p_dot_g**2-slope2*(px**2+py**2-c**2*T2))))/slope2
+    xV = xe-(px-h*dzdx)
+    yV = ye-(py-h*dzdy)
+    zV = ze-h
     return xV,yV,zV
 
 def trigrad(x : np.ndarray, y : np.ndarray, z : np.ndarray):
@@ -549,7 +580,13 @@ def trigrad(x : np.ndarray, y : np.ndarray, z : np.ndarray):
 
 
     # Delaunay triangulation
-    tri = scipy.spatial.Delaunay(np.vstack((x, y)).T , qhull_options = 'Qt Qbb Qc') # To make it consistent with Matlab (https://stackoverflow.com/questions/36604172/difference-between-matlab-delaunayn-and-scipy-delaunay)
+    # Triangulate the positions relative to the array, rounded to 1e-12 of its extent:
+    # the Delaunay triangulation of a grid is not unique, and qhull would otherwise
+    # pick the diagonals from the rounding of the absolute coordinates, making the
+    # gradients depend on where the array is.
+    extent = max(np.ptp(x), np.ptp(y))
+    relative_points = np.round(np.vstack((x-np.min(x), y-np.min(y))).T/extent, 12)
+    tri = scipy.spatial.Delaunay(relative_points, qhull_options = 'Qt Qbb Qc') # To make it consistent with Matlab (https://stackoverflow.com/questions/36604172/difference-between-matlab-delaunayn-and-scipy-delaunay)
     dt = tri.simplices
 
     # Number of triangles and points

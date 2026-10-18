@@ -267,18 +267,20 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: ut
 
 
     #%-- Pitch & width or kerf (in m)
-    if not utils.isfield(param,'pitch'):
-        raise ValueError('A pitch value (PARAM.pitch) is required.')
+    # The pitch is not needed when the element positions are given in PARAM.elements
+    if not utils.isfield(param,'pitch') and not utils.isfield(param,'elements'):
+        raise ValueError('A pitch value (PARAM.pitch) or the element positions (PARAM.elements) are required.')
 
     if param.get('fnumber', None) is None:
         #% NOTE:
         #% An element width or a kerf width is required if the f-number is []
-        if utils.isfield(param,'width') and utils.isfield(param,'kerf'):
+        if utils.isfield(param,'width') and utils.isfield(param,'kerf') and utils.isfield(param,'pitch'):
             assert abs(param.pitch-param.width-param.kerf)<utils.eps(), 'The pitch must be equal to (kerf width + element width).'
-        elif utils.isfield(param,'kerf'):
-            param.width = param.pitch-param.kerf
         elif utils.isfield(param,'width'):
-            param.kerf = param.pitch-param.width
+            if utils.isfield(param,'pitch'):
+                param.kerf = param.pitch-param.width
+        elif utils.isfield(param,'kerf') and utils.isfield(param,'pitch'):
+            param.width = param.pitch-param.kerf
         else:
             raise ValueError('An element width (PARAM.width) or kerf width (PARAM.kerf) is required if PARAM.fnumber = [].')
 
@@ -299,7 +301,6 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: ut
         param.radius = np.inf #% default = linear array
 
     RadiusOfCurvature = param.radius
-    isLINEAR = np.isinf(RadiusOfCurvature)
 
     #%-- Reception angle (in rad) -- [Advanced option for vector Doppler] --
     if not utils.isfield(param,'RXangle') or param.RXangle==0:
@@ -345,28 +346,6 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: ut
         assert param.Nelements==nc, 'PARAM.TXdelay or DELAYS must be of length PARAM.Nelements.'
 
 
-    #%-- Locations of the transducer elements (!if PARAM.elements is given!)
-    if utils.isfield(param,'elements'):
-        assert len(param.elements.shape) == 2 and (1 in param.elements.shape or 2 in param.elements.shape), \
-        'PARAM.elements must be a vector, a 2-row or a 2-column matrix that contains the x- (and optionally z-)locations of the transducer elements.'
-        if param.elements.shape[0] ==2:
-            #% param.elements is a two-row matrix
-            xe = param.elements[0, :]
-            ze = param.elements[1, :]
-        elif param.elements.shape[1 ]==2:
-            #% param.elements is a two-column matrix
-            xe = param.elements[:, 0]
-            ze = param.elements[:, 1]
-        else:
-            #% param.elements is a vector
-            xe = param.elements.reshape((1,-1))
-            ze = np.zeros_like(xe)
-
-        isPARAMelements = True
-    else:
-        isPARAMelements = False
-
-
     #%-- Center frequency (in Hz)
     if isIQ:
         if utils.isfield(param,'fc'):
@@ -390,7 +369,9 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: ut
 
 
     #%-- Centers of the tranducer elements (x- and z-coordinates)
+    #% (from PARAM.elements if given, else from the uniform linear/convex array)
     xe, ze, THe, h = param.getElementPositions()
+    assert xe.size==nc, 'The number of elements must be equal to size(SIG,2).'
 
     #% note: THe = angle of the normal to element #e with respect to the z-axis
 
@@ -409,17 +390,11 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: ut
         if nTX>1:
             idxi = np.linspace(0,nTX -1,4*nTX)
             xTi = utils.interp1(xe[idx], idxi, kind = 'cubic')
-            if isLINEAR:
-                zTi = np.zeros_like(xTi)
-            else:
-                zTi = utils.interp1(ze[idx], idxi,'spline')
+            zTi = utils.interp1(ze[idx], idxi,'spline')
             delaysTXi = utils.interp1(delaysTX[idx],idxi,'spline')
         else:
             xTi = xe[idx]
-            if isLINEAR:
-                zTi =np.zeros_like(idx)
-            else: 
-                zTi = ze[idx]
+            zTi = ze[idx]
             delaysTXi = delaysTX[idx]
 
 
@@ -547,16 +522,16 @@ def dasmtx(SIG: np.ndarray, x: np.ndarray, z: np.ndarray, *varargin, backend: ut
             else:
                 #% -- for a linear array
                 #% For a given location [x(k),z(k)], one has:
-                #% Iaperture = abs(xT-x(k)) <= z(k)/2/fNum;
-                Iaperture = xp.abs(dxT)<=(z/2/fNum)
+                #% Iaperture = abs(xT-x(k)) <= (z(k)-zT)/2/fNum;
+                Iaperture = xp.abs(dxT)<=(dzT/2/fNum)
                 #% Iaperture = mean(abs(dxT),1)<=(z/2/fNum);
 
 
         else: #% [Advanced option for vector Doppler: Reception angle]
             #% -- ONLY for a rectilinear array
             #% For a given location [x(k),z(k)], one has:
-            #% Iaperture = abs(xT-x(k)-z(k)*tanRX(k)) <= z(k)/cosRX(k)/2/fNum;
-            Iaperture = xp.abs(dxT-z*tanRX.reshape((-1,1), order = 'F'))<=(z/cosRX.reshape((-1,1), order = 'F')/2/fNum)
+            #% Iaperture = abs(xT-x(k)-(z(k)-zT)*tanRX(k)) <= (z(k)-zT)/cosRX(k)/2/fNum;
+            Iaperture = xp.abs(dxT-dzT*tanRX.reshape((-1,1), order = 'F'))<=(dzT/cosRX.reshape((-1,1), order = 'F')/2/fNum)
 
         I = np.logical_and(I,np.asarray(Iaperture))
 

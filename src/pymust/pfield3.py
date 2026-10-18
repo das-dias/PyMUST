@@ -261,12 +261,10 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
     assert 'fc' in param, 'A center frequency value (PARAM.fc) is required.'
     fc = param.fc # central frequency (Hz)
 
-    #-- 2) Coordinates of the transducer elements (xe,ye)
-    # note: ze = 0 in this PFIELD3 version.
-    assert 'elements' in param, 'PARAM.elements must contain the x- and y-locations of the transducer elements.'
-    assert len(param.elements.shape) == 2 and param.elements.shape[0] == 2, 'PARAM.elements must have two rows that contain the x (1st row) and y (2nd row) coordinates of the transducer elements.'
-    xe = param.elements[0, :]
-    ye = param.elements[1, :]
+    #-- 2) Coordinates of the transducer elements (xe,ye,ze)
+    # PARAM.elements: (x, y) rows with ze = 0, or (x, y, z) rows; without it, the
+    # uniform linear array given by PARAM.pitch and PARAM.Nelements
+    xe, ye, ze = param.get_element_coordinates()
     assert len(xe) == NumberOfElements, 'The number of elements must match the number of transmit delays.'
     
     #-- 3) Element width (in m)
@@ -462,7 +460,8 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
 
     #-- Out-of-field points
     # Null pressure will be assigned to out-of-field points.
-    isOUT = z<0
+    # (behind the array: z<0 for a planar array at z = 0)
+    isOUT = z<np.min(ze)
 
     #-- Variables that we need:
     #
@@ -476,11 +475,12 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
     #
     dxi = x.reshape((-1,1,1), order='F')-xi-xe.reshape((1, -1, 1), order='F')
     dyi = y.reshape((-1,1,1), order='F')-yi-ye.reshape((1, -1, 1), order='F')
+    dzi = z.reshape((-1,1,1), order='F')-ze.reshape((1, -1, 1), order='F')
     d2 = dxi**2+dyi**2
-    r = np.sqrt(d2+z.reshape((-1,1,1), order='F')**2).astype(np.float32)
+    r = np.sqrt(d2+dzi**2).astype(np.float32)
 
     eps_sp = np.finfo(np.float32).eps
-    cosT = (np.expand_dims(z,axis=1)+eps_sp)/(r+eps_sp) # DR : expand dimensions to match the shape of r
+    cosT = (dzi+eps_sp)/(r+eps_sp)
     sinT = (np.sqrt(d2)+eps_sp)/(r+eps_sp)
     cosP = (dxi+eps_sp)/(np.sqrt(d2)+eps_sp)
     sinP = (dyi+eps_sp)/(np.sqrt(d2)+eps_sp)
@@ -491,7 +491,7 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
     smallD = (c/fc/2)
     r[r<smallD] = smallD
 
-    dxi, dyi, d2 = None, None, None # Clear memory if needed
+    dxi, dyi, dzi, d2 = None, None, None, None # Clear memory if needed
 
     #%-------------------------------------------%
     #% end of POINT LOCATIONS, DISTANCES & GRIDS %
@@ -579,6 +579,9 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
             ObliFac = cosT/(cosT+param.baffle)
     else: # 1 if rigid baffle
         ObliFac = np.ones(cosT.shape, np.float32)
+
+    # No radiation behind an element (points with z < ze), as in PFIELD
+    ObliFac = np.where(cosT<=0, utils.eps('single'), ObliFac)
 
     #-- Note on Attenuation
     # Reference: Diagnostic ultrasound imaging - inside out (T.L. Szabo)
@@ -723,6 +726,6 @@ def pfield3(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, p
     if not isSIMUS3:
         RP =np.sqrt(RP).reshape(siz0, order='F')
         SPECT = np.moveaxis(SPECT, 0, -1)
-        SPECT = SPECT.reshape([siz0[0], siz0[1], siz0[2], nSampling], order='F')
+        SPECT = SPECT.reshape((*siz0, nSampling), order = 'F')
 
     return RP, SPECT, IDX

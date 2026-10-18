@@ -2,7 +2,10 @@ import numpy as np, scipy, scipy.interpolate, multiprocessing, multiprocessing.p
 from abc import ABC
 import inspect, matplotlib, pickle, os, matplotlib.pyplot as plt, copy
 from collections import deque
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    import plotly.graph_objects as go
 
 BackendName = Literal["numpy", "jax"]
 
@@ -87,11 +90,39 @@ class Param(dotdict):
             'TXapodization','TXfreqsweep','TXnow','t0','width'}
         return {n.lower(): n for n in names}
     
+    def read_elements(self) -> np.ndarray:
+        """PARAM.elements as a (rows, E) array of coordinates, copied and never written back."""
+        elements = np.atleast_2d(np.array(self.elements, dtype = float))
+        if elements.shape[0] not in (1, 2, 3):
+            elements = elements.T
+        assert elements.shape[0] in (1, 2, 3), 'PARAM.elements must have 1, 2 or 3 rows (or columns) of coordinates.'
+        assert self.radius is None or np.isinf(self.radius), \
+            'PARAM.radius must be Inf (or absent) when PARAM.elements is given.'
+        assert self.Nelements is None or self.Nelements == elements.shape[1], \
+            'PARAM.Nelements must match the number of elements in PARAM.elements.'
+        return elements
+
     def getElementPositions(self):
         """
-        Returns the position of each piezoelectrical element in the probe.
+        Returns the (x, z) position, normal angle and apothem of each element, all of size (1, E).
+
+        If PARAM.elements is given, it is used as is: one row (x), two rows (x, z) or
+        three rows (x, y, z) with y = 0; the element normals point along +z.
+        Otherwise the positions of the uniform linear/convex array are computed from
+        PARAM.pitch, PARAM.Nelements and PARAM.radius.
         """
-        RadiusOfCurvature = self.radius
+        if self.elements is not None:
+            elements = self.read_elements()
+            assert elements.shape[0] < 3 or not elements[1].any(), \
+                'Elements off the y = 0 plane need the 3-D functions (PFIELD3, SIMUS3, TXDELAY3, DASMTX3).'
+            xe = elements[0]
+            ze = elements[-1] if elements.shape[0] > 1 else np.zeros_like(xe)
+            THe = np.zeros_like(xe)
+            return xe.reshape((1,-1)), ze.reshape((1,-1)), THe.reshape((1,-1)), np.zeros_like(THe).reshape((1,-1))
+
+        assert self.pitch is not None and self.Nelements is not None, \
+            'PARAM.pitch and PARAM.Nelements (or PARAM.elements) are required.'
+        RadiusOfCurvature = np.inf if self.radius is None else self.radius # default = linear array
         NumberOfElements = self.Nelements
 
         if np.isinf(RadiusOfCurvature):
@@ -111,7 +142,25 @@ class Param(dotdict):
             xe = RadiusOfCurvature*np.sin(THe)
             ze = ze-h
         return xe.reshape((1,-1)), ze.reshape((1,-1)), THe.reshape((1,-1)), h.reshape((1,-1))
-    
+
+    def get_element_coordinates(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Returns the (x, y, z) centres of the elements for the 3-D functions, each of size (E,).
+
+        PARAM.elements is used as is: one row (x), two rows (x, y) with z = 0, or three
+        rows (x, y, z). Without PARAM.elements, a uniform linear array lies along x.
+        """
+        if self.elements is None:
+            assert self.radius is None or np.isinf(self.radius), \
+                'Convex arrays are not supported by the 3-D functions: give the element positions in PARAM.elements.'
+            element_x, element_z, _, _ = self.getElementPositions()
+            return element_x.ravel(), np.zeros(element_x.size), element_z.ravel()
+        elements = self.read_elements()
+        zeros = np.zeros(elements.shape[1])
+        element_y = elements[1] if elements.shape[0] > 1 else zeros
+        element_z = elements[2] if elements.shape[0] > 2 else zeros
+        return elements[0], element_y, element_z
+
     def getPulseSpectrumFunction(self, FreqSweep = None):
         if 'TXnow' not in self:
             self.TXnow = 1
@@ -261,6 +310,73 @@ def polarplot(x, z, v, cmap = 'gray',background = 'black', probeUpward = True, *
     ax.set_facecolor(background)
     if probeUpward:
         ax.invert_yaxis()
+
+
+DEFAULT_ELEMENT_THICKNESS_M = 500e-6
+MM_PER_M = 1e3
+# Unit box with corner index = ix + 2*iy + 4*iz: x and y centred on the element,
+# z from the back (-1) to the front face (0), which lies at the element position
+UNIT_BOX_CORNERS = np.array([[ix-0.5, iy-0.5, iz-1] for iz in (0, 1) for iy in (0, 1) for ix in (0, 1)])
+UNIT_BOX_TRIANGLES = np.array([
+    [0, 1, 3], [0, 3, 2], [4, 5, 7], [4, 7, 6],  # back, front
+    [0, 1, 5], [0, 5, 4], [2, 3, 7], [2, 7, 6],  # y sides
+    [0, 2, 6], [0, 6, 4], [1, 3, 7], [1, 7, 5],  # x sides
+])
+
+
+def plot_transducer_array(param: Param, thickness: float = DEFAULT_ELEMENT_THICKNESS_M) -> "go.Figure":
+    """
+    Interactive 3-D view of the transducer elements, drawn as boxes of size
+    width (x) x height (y) x thickness (z) in mm.
+
+    Each box's front face is centred on the element position and the box extends
+    behind it, along the element normal (tilted for convex arrays). The positions
+    are those used by the simulation and beamforming functions: PARAM.elements,
+    read as (x, y) or (x, y, z) rows as in PFIELD3, or else the uniform
+    linear/convex array. If PARAM.height is missing or infinite, the boxes are
+    square (height = width).
+
+    Requires plotly (pip install pymust[plot]); the returned figure renders
+    interactively as a Jupyter cell output.
+    """
+    import plotly.graph_objects as go
+
+    if param.elements is None:
+        element_x, element_z, element_tilt, _ = (positions.ravel() for positions in param.getElementPositions())
+        element_y = np.zeros_like(element_x)
+    else:
+        element_x, element_y, element_z = param.get_element_coordinates()
+        element_tilt = np.zeros_like(element_x)
+
+    element_width = param.width if param.width is not None else param.pitch - param.kerf
+    element_height = param.height if param.height is not None and np.isfinite(param.height) else element_width
+    box_corners = UNIT_BOX_CORNERS * np.array([element_width, element_height, thickness])
+
+    # Element frame: in-plane axis (cos, 0, -sin) and normal (sin, 0, cos), as in PFIELD
+    zeros = np.zeros_like(element_tilt)
+    in_plane_axis = np.stack([np.cos(element_tilt), zeros, -np.sin(element_tilt)], axis = 1)
+    normal_axis = np.stack([np.sin(element_tilt), zeros, np.cos(element_tilt)], axis = 1)
+    elevation_axis = np.array([0.0, 1.0, 0.0])
+    centers = np.stack([element_x, element_y, element_z], axis = 1)
+    vertices = (centers[:, None, :]
+                + box_corners[None, :, 0, None] * in_plane_axis[:, None, :]
+                + box_corners[None, :, 1, None] * elevation_axis
+                + box_corners[None, :, 2, None] * normal_axis[:, None, :]).reshape((-1, 3)) * MM_PER_M
+    box_offsets = len(UNIT_BOX_CORNERS) * np.arange(len(centers))[:, None, None]
+    triangles = (UNIT_BOX_TRIANGLES[None] + box_offsets).reshape((-1, 3))
+
+    element_index = np.repeat(np.arange(len(centers)), len(UNIT_BOX_CORNERS))
+    figure = go.Figure(go.Mesh3d(
+        x = vertices[:, 0], y = vertices[:, 1], z = vertices[:, 2],
+        i = triangles[:, 0], j = triangles[:, 1], k = triangles[:, 2],
+        hovertext = [f'element {index}' for index in element_index], hoverinfo = 'text',
+        flatshading = True, color = 'lightsteelblue',
+    ))
+    figure.update_layout(scene = dict(
+        xaxis_title = 'x (mm)', yaxis_title = 'y (mm)', zaxis_title = 'z (mm)',
+        zaxis_autorange = 'reversed', aspectmode = 'data',
+    ))
+    return figure
 
 
 def getDopplerColorMap():

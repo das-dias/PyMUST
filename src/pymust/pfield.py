@@ -270,16 +270,18 @@ def pfield(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, pa
     fc = param.fc # central frequency (Hz)
 
     #%-- 2) Pitch (in m)
-    assert'pitch' in param,'A pitch value (PARAM.pitch) is required.'
+    # The pitch is not needed when the element positions are given in PARAM.elements
+    assert 'pitch' in param or 'elements' in param, 'A pitch value (PARAM.pitch) or the element positions (PARAM.elements) are required.'
     pitch = param.pitch
 
     #%-- 3) Element width and/or Kerf width (in m)
-    if 'width' in param and 'kerf' in param:
+    if 'width' in param and 'kerf' in param and pitch is not None:
         assert np.abs(pitch-param.width-param.kerf)<utils.eps('single'), 'The pitch must be equal to (kerf width + element width).'
-    elif 'kerf' in param:
-        param.width = pitch-param.kerf
     elif 'width' in param:
-        param.kerf = pitch-param.width
+        if pitch is not None:
+            param.kerf = pitch-param.width
+    elif 'kerf' in param and pitch is not None:
+        param.width = pitch-param.kerf
     else:
         raise ValueError('An element width (PARAM.width) or kerf width (PARAM.kerf) is required.')
     ElementWidth = param.width
@@ -497,7 +499,8 @@ def pfield(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, pa
     zi = tmp.reshape((1,1,M))*np.sin(-THe)[:,:,np.newaxis]
     #%-- Out-of-field points
     #% Null pressure will be assigned to out-of-field points.
-    isOUT = z<0
+    #% (behind the array: z<0 for the uniform linear and convex arrays)
+    isOUT = z<np.min(ze)
     if np.isfinite(RadiusOfCurvature):
         isOUT = np.logical_or(isOUT, (x**2+(z+h)**2) <=RadiusOfCurvature**2)
     
@@ -890,7 +893,7 @@ def pfield(x: np.ndarray, y: np.ndarray, z: np.ndarray, delaysTX: np.ndarray, pa
     if not (isSIMUS or isMKMOVIE):
         RP =np.sqrt(RP).reshape(siz0, order = 'F')
         SPECT = np.swapaxes(SPECT, 0, 1)
-        SPECT = SPECT.reshape([siz0[0], siz0[1], nSampling], order = 'F')
+        SPECT = SPECT.reshape((*siz0, nSampling), order = 'F')
     return RP, SPECT, IDX
 
 
